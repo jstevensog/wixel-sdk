@@ -1,0 +1,223 @@
+/** \mainpage Wixel SDK Documentation
+
+The Pololu Wixel Software Development Kit (SDK) contains code and Makefiles
+that will help you create your own applications for the
+<a href="http://www.pololu.com/catalog/product/1336">Pololu Wixel</a>.
+The Wixel is a general-purpose programmable module featuring a 2.4&nbsp;GHz radio
+and USB.
+The Wixel is based on the
+<a href="http://focus.ti.com/docs/prod/folders/print/cc2511f32.html">CC2511F32</a>
+microcontroller from Texas Instruments, which has an integrated radio transceiver,
+32 KB of flash memory, 4 KB of RAM, and a full-speed USB interface.
+
+\section starting Getting Started
+
+To load apps onto the Wixel, you will need to have
+the Wixel's drivers and software installed on your system.
+See the <i>Getting Started</i> section of the 
+<a href="http://www.pololu.com/docs/0J46">Pololu Wixel User's Guide</a>.
+
+To develop your own apps or modify existing ones using the Wixel SDK,
+you will need to have a copy of the Wixel SDK,
+<a href="http://sdcc.sourceforge.net/">SDCC</a> version 3.0.0 or later,
+and you will need to have certain GNU utililties available on your path:
+cat, cp, echo, grep, make, mv, rm, and sed.
+
+For Windows users, we recommend that you install all of these components
+by downloading the <b>Wixel Development Bundle</b>, available from the
+<a href="http://www.pololu.com/docs/0J46">Pololu Wixel User's Guide</a>.
+
+Please see the <i>Writing Your Own Wixel App</i>
+section of the 
+<a href="http://www.pololu.com/docs/0J46">Pololu Wixel User's Guide</a>
+for step-by-step instructions for getting started with the Wixel SDK.
+
+\section sdk Downloading the Wixel SDK itself
+
+The Wixel SDK is available as a
+<a href="http://github.com/pololu/wixel-sdk">git repository hosted on github</a>.
+You can get the latest version by installing <a href="http://git-scm.com/">git</a>
+and running:
+<pre>
+git clone -o pololu git://github.com/pololu/wixel-sdk.git
+</pre>
+
+If you need help, see github's instructions on how to
+<a href="http://help.github.com/set-up-git-redirect">Set Up Git</a>.
+For Windows users, we also recommend installing
+<a href="http://code.google.com/p/tortoisegit/">TortoiseGit</a>
+because it provides a good graphical user interface for git.
+
+You can also download the 
+<a href="https://github.com/pololu/wixel-sdk/zipball/latest">latest version of the Wixel SDK</a>
+from github.
+
+
+\section building_app Building and Loading Apps
+
+Open a command-line terminal, navigate to the top level directory
+of the SDK, and type "make".  This will build all of the apps in
+the apps folder and all of the libraries that they depend on.
+
+To load an app onto all the Wixels connected to the computer,
+type "make load_APPNAME" where APPNAME is the name of your app's
+folder in the apps directory.
+
+To open your app in the Wixel Configuration Utility,
+type "make open_APPNAME".
+
+Running any of the commands above will rebuild your app if it
+is out of date.
+
+\section creating_app Creating Your Own App
+
+To create your own app, simply copy one of the existing folders in the
+<code>apps</code> directory and change its name.
+You do not need to modify the Makefile;
+the Makefile will automatically detect the new app as long as it is in
+the <code>apps</code> folder.
+
+If your app doesn't use the default set of libraries defined in
+<code>libraries/libs.mk</code>, you can specify which libraries
+your app uses by creating a file called
+<code>options.mk</code> in your
+app directory and defining a GNU Make variable in it called <code>APP_LIBS</code>
+that contains a list of the file names of the libraries your app uses, separated
+by spaces.  See <code>apps/test_board/options.mk</code> for an example.
+\endcode
+
+\section sdk_docs Documentation of Wixel SDK Libraries
+
+The <a href="./group__libraries.html">Libraries</a> page contains an overview
+of all the libraries available in this SDK.
+
+The <a href="./files.html">File List</a> page links to the documentation
+for all the library functions, grouped by header file.
+This documentation is auto-generated from the .h
+files in the SDK.
+
+The <a href="./globals.html">Globals</a> page contains an index of all
+the global functions variables, typedefs, and defines in this SDK.
+
+To generate this documentation yourself, type "make docs"
+(requires <a href="http://www.doxygen.org/">Doxygen</a>).
+
+\section other_docs Other Documentation
+
+Documentation for the Wixel itself is available in the
+<a href="http://www.pololu.com/docs/0J46">Pololu Wixel User's Guide</a> provided by Pololu.
+The user's guide contains schematic diagrams, pinout diagrams, documentation for the
+apps, example wiring, and more.
+
+Documentation for the CC2511F32 (the microcontroller on the Wixel) is available in the
+<a href="http://focus.ti.com/docs/prod/folders/print/cc2511f32.html">CC2511F32 datasheet</a>
+provided by Texas Instruments.
+The datasheet provides detailed technical information about the hardware peripherals and
+how to control them, as well as electrical specifications, and more.
+Texas Instruments also provides many app notes and design notes on the
+<a href="http://focus.ti.com/docs/prod/folders/print/cc2511f32.html">CC2511F32</a> page.
+
+Documentation for SDCC is available on the <a href="http://sdcc.sourceforge.net/">SDCC website</a>.
+
+\section make_exception Make Interrupt/Exception Error
+
+You might get the following error message from make in Windows:
+<pre>
+make: Interrupt/Exception caught (code = 0xc00000fd, addr = 0x425073)
+</pre>
+
+If you get this error, please run "make -v" at a Command Prompt and make
+sure that you are running <a href="https://github.com/pololu/make">GNU Make 3.82-pololu1</a> or later.
+This version of make is included in the latest <b>Wixel Development Bundle</b>,
+available from the <a href="http://www.pololu.com/docs/0J46">Pololu Wixel User's Guide</a>.
+If the output from "make -v" shows some other version of make even after
+installing the Wixel Development Bundle, then you should remove that other version
+of make from your PATH or reorder your PATH so that version 3.82-pololu1 (or later)
+is used.
+You can edit your PATH environment variable from the Control Panel.
+See the <a href="https://github.com/pololu/make/wiki">pololu/make wiki on github</a>
+for more information on this problem.
+
+\section help Getting Help
+
+If you have a problem or question, feel free to ask us on the
+<a href="http://forum.pololu.com/viewforum.php?f=30">Pololu Forum</a>.
+
+
+**/
+
+/******************************************************************************/
+/** \defgroup libraries Wixel SDK Libraries
+
+\section radio_libs Radio Libraries
+
+- <b>radio_com.lib (radio_com.h)</b>:  Provides reliable, ordered
+  delivery and reception of a stream of bytes between two devices.
+  Also supports control signals.
+  Depends on <b>radio_link.lib</b>.
+- <b>radio_link.lib (radio_link.h)</b>:
+  Provides reliable, ordered delivery and reception of a
+  series of data packets between two devices.
+  This is the layer that takes care of Ping/ACK/NAK packets, and handles the
+  details of timing.  Depends on <b>radio_mac.lib</b>.
+- <b>radio_queue.lib (radio_queue.h)</b>:
+  Provides queues for sending and receiving radio packets.
+  It does not ensure reliability, nor does it specify a format for the
+  packet contents.
+  Depends on <b>radio_mac.lib</b>. 
+- <b>radio_mac.lib (radio_mac.h)</b>: Takes care of setting up the
+  radio's DMA channel and interrupt, and allows higher-level code to control the
+  radio from an interrupt.  This is a general purpose library that could be used
+  to implement any kind of radio protocol.
+  Depends on <b>radio_registers.lib</b> and <b>dma.lib</b>.
+- <b>radio_registers.lib (radio_registers.h)</b>:
+  Configures the radio with some good default settings, and provides
+  some basic functions for reading information from the radio.
+
+\section usb_libs USB Libraries
+
+- <b>usb_cdc_acm.lib (usb_com.h):</b> Implements the USB CDC ACM interface, which
+  allows the Wixel to appear as a virtual COM port when it is connected to a PC.
+  Depends on <b>usb.lib</b> and <b>wixel.lib</b>.
+- <b>usb_hid.lib (usb_hid.h):</b> Implements a USB Human Interface Device (HID)
+  which allows the Wixel to appear as both a Mouse and Keyboard when it is
+  connected to a PC.  Depends on <b>usb.lib</b> and <b>wixel.lib</b>.
+- <b>usb.lib (usb.h):</b> Sets up the USB module and responds to standard device
+  requests.  This is a general purpose library that could be used to implement
+  many different kinds of USB device interfaces.  Depends on <b>wixel.lib</b>.
+  
+\section peripheral_libs Peripheral Driver Libraries
+
+- <b>adc.lib (adc.h):</b> Uses the Analog-to-Digital Converter (ADC) to read analog voltages.
+- <b>gpio.lib (gpio.h):</b> Uses the CC2511's pins as general purpose inputs or outputs (GPIO).
+- <b>i2c.lib (i2c.h):</b> Provides a basic software (bit-banging) implementation of a master
+  node for I<sup>2</sup>C communication.  Depends on <b>gpio.lib</b> and <b>wixel.lib</b>.
+- <b>servo.lib (servo.h):</b> Provides the ability to control up to 6
+   RC servos by generating digital pulses directly from your Wixel without the
+   need for a separate servo controller.
+- <b>uart.lib (uart0.h, uart1.h):</b> Uses USART0 and/or USART1 in UART mode to send and
+  receive serial bytes.
+- <b>spi_master.lib (spi0_master.h, spi1_master.h):</b> Uses USART0 and/or USART1 in SPI mode to send and receive bytes from an SPI slave.
+
+\section basic_libs Basic Libraries
+
+- <b>wixel.lib (board.h, time.h)</b>: Takes care of everything that is specific
+  to the Wixel hardware, including managing LEDs and other I/O lines, detecting
+  the current power source, keeping track of time, and providing delay
+  functions.
+- <b>dma.lib (dma.h)</b>: Coordinates the use of DMA channels 1-3.  Does not touch DMA channel 0.
+- <b>random.lib (random.h)</b>: Takes care of generating random numbers.
+
+\section libc Standard C Libraries
+
+The Small Device C Compiler (SDCC) provides library routines that may be
+useful for your application.  In particular, if you need to format a string of
+ASCII text, <code>sprintf</code> is useful.  SDCC also provides math routines
+and a memory allocation routine (malloc).
+See the
+<a href="http://sdcc.sourceforge.net/doc/sdccman.html/node92.html">Library
+Routines section of the SDCC manual</a> for more information.
+Also, several of the example and test apps in the <code>apps</code> directory
+use <code>printf</code> or <code>sprintf</code>.
+
+**/

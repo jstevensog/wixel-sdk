@@ -1,0 +1,40 @@
+# Ignore the weird files produces by SDCC during the linking step, for
+# example apps/wireless-serial/wireless-serial.  To do this, we ignore
+# all files inside an app that don't have a period in the name.
+apps/*/*.20*
+# Ignore my usual temporary save files.
+
+# Ignore the files produced by the compiler or makefile as a side
+# effect of compilation.
+*.adb
+*.asm
+*.bak
+*.cdb
+*.d
+*.hex
+*.ihx
+*.lk
+*.lib
+*.lnk
+*.lst
+*.map
+*.mem
+*.omf
+*.org
+*.rel
+*.rst
+*.sym
+*.wxl
+
+# Ignore eclipse files
+.cproject
+.project
+
+/docs
+
+/libraries/src/uart/uart0.c
+/libraries/src/uart/uart1.c
+/libraries/src/spi_master/spi0_master.c
+/libraries/src/spi_master/spi1_master.c
+
+/installer/build/

@@ -340,7 +340,7 @@ void updateLeds()
 		}
 	}
 
-//	LED_YELLOW(radioQueueRxCurrentPacket());
+	LED_RED(radioQueueRxCurrentPacket());
 //	LED_RED(0);
 }
 
@@ -414,22 +414,43 @@ void dexcom_src_to_ascii(uint32 src, char addr[6])
 }
 
 
-//convert ascii passed to unint32 Dexcom source address.
-
+/* asciiToDexcomSrc - 	function to convert a 5 character string into a unit32 that equals a Dexcom
+						transmitter Source address.  The 5 character string is equivalent to the 
+						characters printed on the transmitter, and entered into a reciever.
+	Parameters:
+		addr		-	a 5 character string. eg "63GEA"
+	Returns:
+		uint32		-	a value equivalent to the incodeded Dexcom Transmitter address.  For use in 
+						the WaitForPacket function to filter packets.
+	Uses:
+		getSrcValue(char)
+			This function returns a value equivalent to the character for encoding.
+			See srcNameTable[]
+*/
 uint32 asciiToDexcomSrc(char addr[6])
 {
+	// prepare a uint32 variable for our return value
 	uint32 src = 0;
-//	unsigned char i = 0;
+	// look up the first character, and shift it 20 bits left.
 	src |= (getSrcValue(addr[0]) << 20);
+	// look up the second character, and shift it 20 bits left.
 	src |= (getSrcValue(addr[1]) << 15);
+	// look up the third character, and shift it 20 bits left.
 	src |= (getSrcValue(addr[2]) << 10);
+	// look up the fourth character, and shift it 20 bits left.
 	src |= (getSrcValue(addr[3]) << 5);
+	// look up the fifth character, and shift it 20 bits left.
 	src |= getSrcValue(addr[4]);
 	//printf("asciiToDexcomSrc: val=%u, src=%u\r\n", val, src);
 	return src;
 }
 
-//find the value of the src addr character.  Called by ascii_to_dexcom_src
+/* getSrcValue	-	function to determine the encoding value of a character in a Dexcom Transmitter ID.
+	Parameters:
+		srcVal	-	The character to determine the value of
+	Returns:
+		uint32	-	The encoding value of the character.
+*/
 uint32 getSrcValue(char srcVal)
 {
 	uint8 i = 0;
@@ -459,14 +480,14 @@ uint32 getSrcValue(char srcVal)
 //function to print the passed Dexom_packet as either binary or ascii.
 void print_packet(Dexcom_packet* pPkt)
 {
+	//first normalise the pPkt-txId
 	uint8 txid = (pPkt->txId & 0xFC) >> 2;
 
-	//char srcAddr[6];
+	//Next, convert the pPkt->src_addr to a string and store it in the global srcAddr array for printing.
 	dexcom_src_to_ascii(pPkt->src_addr, srcAddr);
-	//dex_tx_id = asciiToDexcomSrc(dex_tx_id_str);
-	//printf("myDexID is %s, %x\r\n", dex_tx_id_str, dex_tx_id);
-	printf("%s, %lu, ", srcAddr, pPkt->src_addr);
-	printf("%lu, %lu, %hhu, %hhi, %hhu\r\n", 
+	//print it comma separated.
+	printf("%s, %lu, %lu, %hhu, %hhi, %hhu\r\n",
+		srcAddr,
 		dex_num_decoder(pPkt->raw),
 		2 * dex_num_decoder(pPkt->filtered),
 		pPkt->battery,
@@ -552,9 +573,23 @@ int doUsbCommand()
 		}
 		dexcom_src_to_ascii(dex_tx_id, srcAddr);
 		//printf("OK TXID is %lu\r\n", dex_tx_id);
-		printf("OK TXID is %s\r\n", srcAddr);
+		printf("OK TXID is %s (%lu)\r\n", srcAddr, dex_tx_id);
 		return 0;
 	}
+/*	if(memcmp(usb_command.usbCommandBuffer, "PKTDEL", 6) == 0)
+	{
+		if(usb_command.usbCommandBuffer[6] == ' ') 
+		{
+			uint8 c;
+			packet_wait_delay = (usb_command.usbCommandBuffer[7] && 0x3F) - 0x30;
+			for(c = 8; usb_command.usbCommandBuffer[c] != 0; c++) {
+				packet_wait_delay = packet_wait_delay * 10;
+				packet_wait_delay += (usb_command.usbCommandBuffer[7] && 0x3F) - 0x30;
+			}
+		}
+		printf("OK PKTDEL is %u\r\n", packet_wait_delay);
+		return 0;
+	} */
 	printf("Unrecognised command\r\n");
 	return 1;
 }
@@ -620,107 +655,166 @@ void swap_channel(uint8 channel, uint8 newFSCTRL0)
 	RFST = 2;   //RX
 }
 
-// channel is the channel index = 0...3
+/* WaitForPacket - Function to wait on a specified channel for a specified period, for a Dexcom packet.
+	Parmeters:
+		milliseconds	-	The specified number of milliseconds to wait on the channel.
+		pkt				-	The Dexcom_packet variable to fill with the packet data.
+		channel			-	The channel to wait for the packet on.
+	Uses:
+		dex_tx_id		-	Global long which is set to the encoded Dexcom Transmitter ID we are 
+							looking for a packet from.
+		nChannels		- 	Global uint8 Array of channels.
+		fOffset			-	Global uint8 Array of frequency offsets.
+						The above two arrays specify the radio parameters for the Dexom channels.
+		
+	Returns:
+		0				-	Timed out waiting for the packet.
+		1				-	Packet from the desired transmitter was recieved with a valid CRC.
+		-1				-	Abandoned waiting for the packet, as a command is available on the USB.
+	
+*/
 int WaitForPacket(uint16 milliseconds, Dexcom_packet* pkt, uint8 channel)
 {
+	// store the current wixel milliseconds so we know how long we are waiting.
 	uint32 start = getMs();
+	// clear the packet pointer we are going to use to detect one.
 	uint8 XDATA * packet = 0;
+	// set the return code to timeout indication, as it is the most likely outcome.
 	int nRet = 0;
+	// lastpktid is static, because we need to store it during between calls.
+	//set lastpktid to a value of 64, because we should NEVER see this value.
+	static uint8 lastpktxid = 64;
+	// a variable to use to convert the pkt-txId to something we can use.
+	uint8 txid = 0;
 	
-	// safety first
+	// safety first, make sure the channel is valid, and return with error if not.
 	if(channel >= NUM_CHANNELS)
 		return -1;
-	
+	// set the channel parameters using swap_channel
 	swap_channel(nChannels[channel], fOffset[channel]);
-
-/*	if(do_verbose)
-		printf("[%lu] starting wait for packet on channel %d(%d) - will wait for %u ms\r\n", start, channel, (int)CHANNR, milliseconds);
-*/
+	// while we haven't reached the delay......
 	while (!milliseconds || (getMs() - start) < milliseconds)
 	{
+		//see if anything is required to be done immediately, like process a command on the USB.
 		if(!doServices(1))
 			return -1;			// cancel wait, and cancel calling function
 	
 		if (packet = radioQueueRxCurrentPacket())
 		{
 			uint8 len = packet[0];
-
+			// if the packet passed CRC
 			if(radioCrcPassed())
 			{
-				fOffset[channel] += FREQEST;
 				// there's a packet!
-				memcpy(pkt, packet, min8(len+2, sizeof(Dexcom_packet))); // +2 because we append RSSI and LQI to packet buffer, which isn't shown in len
-/*				if(do_verbose)
-					printf("[%lu] received packet channel %d(%d) RSSI %d offset %02X bytes %hhu\r\n", getMs(), channel, (int)CHANNR, getPacketRSSI(pkt), fOffset[channel], len);
-*/
-					nRet = 1;
-				// subtract channel index from transaction ID.  This normalises it so the same transaction id is for all transmissions of a same packet
-				// and makes masking the last 2 bits safe regardless of which channel the packet was acquired on
-				pkt->txId -= channel;
+				// Add the Freqency Offset Estimate from the FREQEST register to the channel offset.
+				// This helps keep the receiver on track for any drift in the transmitter.
+				fOffset[channel] += FREQEST;
+				// fetch the packet.
+				// length +2 because we append RSSI and LQI to packet buffer, which isn't shown in len
+				memcpy(pkt, packet, min8(len+2, sizeof(Dexcom_packet))); 
+				
+				// is the pkt->src_addr the one we want?
+				if(pkt->src_addr == dex_tx_id)
+				{
+					// subtract channel index from transaction ID.  This normalises it so the same transaction id is for all transmissions of a same packet
+					// and makes masking the last 2 bits safe regardless of which channel the packet was acquired on
+					pkt->txId -= channel;
+					//convert pkt->txId to something we understand
+					txid = (pkt->txId & 0xFC) >> 2;
+					// Is this packet different from the one we got last time?
+					// This test prevents us getting the same packet on multiple channels.
+					if(txid != lastpktxid) 
+					{
+						// ok, packet is valid, and we haven't seen it before.
+						// set the return code and save the packet id for later.
+						nRet = 1;
+						// lines below can be commented/uncommented for debugging
+						printf("channel %d, ", channel, lastpktxid, txid);
+						//printf("channel %d, ", channel);
+						// save this packet txid for next time.
+						lastpktxid = txid;
+					}
+				}
 			}
-/*			else
-			{
-				if(do_verbose)
-					printf("[%lu] CRC failure channel %d(%d) RSSI %d %hhu bytes received\r\n", getMs(), channel, (int)CHANNR, (int)((int8)(RSSI))/2 - 73, len);
-			}
-*/
-			// pull the packet off the queue
+			// the line below can be commented/uncommented for debugging.
+			else printf("%d bad CRC\r\n", channel);
+			// pull the packet off the queue, so it isn't there next time we look.
 			radioQueueRxDoneWithPacket();
+			//return the correct code.
 			return nRet;
 		}
 	}
-
-/*	if(do_verbose)
-		printf("[%lu] timed out waiting for packet on channel %d(%d)\r\n", getMs(), channel, (int)CHANNR);
-*/	
+	// we timed out waiting for the packet.
 	return nRet;
 }
 
+/*get_packet - 	A function to scan the 4 Dexcom channels, waiting on each channel for a short period
+				to listen for a packet.
+	Parameters:
+		pPkt	-	Pointer to a Dexcom_packet.
+		
+	Uses:
+				No global variables are used in this function.
+		WaitForPacket(milliseconds, pkt, channel)
+				This function is called to obtain packets.  The return value determines if a packet is
+				available to process, or if something else occurred.
+				get_packet uses a fixed delay of 25 ms on each channel. This is more than adequate to 
+				recieve a packet, which is about 4ms in length.  It cannot be much lower, due to the wixel
+				processing speed.  If you go too low, it will cause the wixel to ignore input on the
+				USB.  Since we need to set the Transmitter ID, this is not a good thing.
+				The Dexcom Tranmsitter sends out a packet in each channel, roughly 500ms apart, every
+				5 minutes.  The combination of get_packet and WaitForPacket ensures we see at least
+				one of the 4 packets each 5 minutes.  WaitForPacket includes code to exclude duplicate
+				packets in each cycle.  We grab the first packet with an ID we didn't see last time, and
+				ignore any packets that appear with the same ID.
+	Returns:
+		0		- 	No Packet received, or a command recieved on the USB.
+		1		-	Packet recieved that passed CRC.
+*/
 int get_packet(Dexcom_packet* pPkt)
 {
-	int delay = 0;								// initial delay is infinite (unless receive cancelled by protocol on USB)
+	int delay =25;
+	//variable holding an index to each channel parameter set.  Set to the first channel.
 	int nChannel = 0;
 	
 	// start channel is the channel we initially do our infinite wait on.
 	for(nChannel = start_channel; nChannel < NUM_CHANNELS; nChannel++)
 	{
-		// initial receive packet call blocks forever. 
+		// We only sit on each channel for 25ms.  This is long enough to get a packet (4ms)
+		// but not so long as prevent do_services() to process the USB port.
 		switch(WaitForPacket(delay, pPkt, nChannel))
 		{
-			case 1:			// got a packet that passed CRC
-				if(pPkt->src_addr == dex_tx_id)
+			case 1:			
+				// got a packet that passed CRC
 					return 1;
-				else
-					return 0;
-			case 0:								// timed out
-				break;
-			case -1:							// cancelled by protocol on USB (e.g. start channel changed)
+			case 0:
+			// timed out
+				continue;
+			case -1:
 			{
-//				if(do_verbose)
-//					printf("[%lu] wait for packet on channel %d(%d) abandoned\r\n", getMs(), nChannel, (int)CHANNR);
+			// cancelled by inbound data on USB (command), or channel invalid.
 				return 0;
 			}
 		}
-		// ok, no packet this time, set new delay and try next channel
-		// set up the delay to wait for 500 ms for a packet.
-//		delay = 500;
-		delay = 10;
 	}
 	return 0;
 }
 
-void LineStateChangeCallback(uint8 state)
+// you can uncomment this if you want a glowing yellow LED when a terminal program is connected
+// to the USB.  I got sick of it.
+// LineStateChangeCallback - sets the yellow LED to the state of DTR on the USB, whenever it changes.
+/*void LineStateChangeCallback(uint8 state)
 {
 	LED_YELLOW(state & ACM_CONTROL_LINE_DTR);
 }
-
+*/
 extern void basicUsbInit();
 
 void main()
 {   
 	systemInit();
 	usbInit();
-	usbComRequestLineStateChangeNotification(LineStateChangeCallback);
+	//usbComRequestLineStateChangeNotification(LineStateChangeCallback);
 
 	// we actually only use USB, so no point wasting power on UART0
 //	openUart();

@@ -714,7 +714,7 @@ int WaitForPacket(uint16 milliseconds, Dexcom_packet* pkt, uint8 channel)
 				memcpy(pkt, packet, min8(len+2, sizeof(Dexcom_packet))); 
 				
 				// is the pkt->src_addr the one we want?
-				if(pkt->src_addr == dex_tx_id)
+				if(pkt->src_addr == dex_tx_id || dex_tx_id == 0)
 				{
 					// subtract channel index from transaction ID.  This normalises it so the same transaction id is for all transmissions of a same packet
 					// and makes masking the last 2 bits safe regardless of which channel the packet was acquired on
@@ -729,7 +729,7 @@ int WaitForPacket(uint16 milliseconds, Dexcom_packet* pkt, uint8 channel)
 						// set the return code and save the packet id for later.
 						nRet = 1;
 						// lines below can be commented/uncommented for debugging
-						printf("channel %d, ", channel, lastpktxid, txid);
+						//printf("channel %d, %d, %d, ", channel, lastpktxid, txid);
 						//printf("channel %d, ", channel);
 						// save this packet txid for next time.
 						lastpktxid = txid;
@@ -840,23 +840,26 @@ void main()
 		// can't safely sleep if we didn't get a packet!
 		if (do_sleep)
 		{
+			// not sure what this is about yet, but I believe it is saving state.
 		    uint8 savedPICTL = PICTL;
 			BIT savedP0IE = P0IE;
 
 			RFST = 4;   //SIDLE
+			// turn all wixel LEDs on
 			LED_RED(1);
 			LED_YELLOW(1);
 			LED_GREEN(1);
+			// wait 80 ms
 			delayMs(80);
-
+			// allow the wixel to complete any other tasks.
 			doServices(1);
-
+			// turn the wixel LEDS off
 			LED_RED(0);
 			LED_YELLOW(0);
 			LED_GREEN(0);
-
+			// sleep for aroud 300s
 			goToSleep(280);   //~295 s
-
+			// still trying to find out what this is about, but I believe it is restoring state.
 			PICTL = savedPICTL;
 			P0IE = savedP0IE;
 			// Enable suspend detection and disable any other weird features.

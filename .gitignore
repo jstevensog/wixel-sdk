@@ -2,6 +2,7 @@
 # example apps/wireless-serial/wireless-serial.  To do this, we ignore
 # all files inside an app that don't have a period in the name.
 apps/*/*.20*
+
 # Ignore my usual temporary save files.
 
 # Ignore the files produced by the compiler or makefile as a side
@@ -38,3 +39,6 @@ apps/*/*.20*
 /libraries/src/spi_master/spi1_master.c
 
 /installer/build/
+
+#Allow
+!libraries/*/*.rel

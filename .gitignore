@@ -41,5 +41,5 @@ apps/*/*.20*
 /installer/build/
 
 #Allow
-!libraries/xpage/*.*
+!libraries/xpage/*
 

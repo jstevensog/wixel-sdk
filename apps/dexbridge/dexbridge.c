@@ -51,6 +51,11 @@ radio_channel: See description in radio_link.h.
 #include <uart0.h>
 #include <gpio.h>
 
+//define the FLASH_TX_ID address.  This is the address we store the Dexcom TX ID number in.
+#define FLASH_TX_ID		(0x77F8)
+#define USB_COMMAND_MAXLEN	(32)
+#define NUM_CHANNELS		(4)
+
 static volatile BIT do_sleep = 0;
 static volatile BIT is_sleeping = 0;
 //static volatile BIT do_verbose = 0;
@@ -69,14 +74,107 @@ uint32 asciiToDexcomSrc(char *addr);
 uint32 getSrcValue(char srcVal);
 
 
-#define USB_COMMAND_MAXLEN	(32)
-#define NUM_CHANNELS		(4)
 
 // frequency offsets for each channel - seed to 0.
 static uint8 fOffset[NUM_CHANNELS] = {0xCE,0xD5,0xE6,0xE5};
 static uint8 nChannels[NUM_CHANNELS] = { 0, 100, 199, 209 };
 
 
+// writeBuffer holds the data from the computer that we want to write in to flash.
+XDATA uint32 writeBuffer;
+
+// flashWriteDmaConfig holds the configuration of DMA channel 0, which we use to
+// transfer the data from writeBuffer in to flash.
+XDATA DMA_CONFIG flashWriteDmaConfig;
+
+// startFlashWrite is a small piece of code we store in RAM which initiates the flash write.
+// According to datasheet section 12.3.2.1, this code needs to be 2-aligned if it is executed
+// from flash. SDCC does not have a good way of 2-aligning code, so we choose to put the code in
+// RAM instead of flash.
+XDATA uint8 startFlashWrite[] = {
+	0x75, 0xAE, 0x02,  // mov _FCTL, #2 :   Sets FCTRL.WRITE bit to 1, initiating a write to flash.
+	0x22               // ret           :   Returns to the calling function.
+};
+  
+ void dma_Init(){
+	// Configure the flash write timer.  See section 12.3.5 of the datasheet.
+	FWT = 32;
+
+	// Set up the DMA configuration block we use for writing to flash (See Figure 21 of the datasheet).
+	// LENL and LENH are sent later when we know how much data to write.
+	flashWriteDmaConfig.SRCADDRH = (unsigned short)&writeBuffer >> 8;
+	flashWriteDmaConfig.SRCADDRL = (unsigned char)&writeBuffer;
+	flashWriteDmaConfig.DESTADDRH = XDATA_SFR_ADDRESS(FWDATA) >> 8;
+	flashWriteDmaConfig.DESTADDRL = XDATA_SFR_ADDRESS(FWDATA);
+
+	// WORDSIZE = 0     : byte
+	// TMODE = 0        : single mode
+	// TRIG = 0d18      : flash
+	flashWriteDmaConfig.DC6 = 18;
+
+	// SRCINC = 01      : yes
+	// DESTINC = 00     : no
+	// IRQMASK = 0      : no   *datasheet said this bit should be 1
+	// M8 = 0           : 8-bit transfer
+	// PRIORITY = 0b10  : high
+	flashWriteDmaConfig.DC7 = 0b01000010;
+
+	DMA0CFG = (uint16)&flashWriteDmaConfig;
+}
+/*
+void writeToCPUFlash(uint16 address, uint16 length, uint8 bEraseOnly)
+{
+	// first erase the page
+    FADDRH  = address >> 9;  // // hi byte of address / 2
+    FADDRL =0;
+    FCTL = 1;                      // Set FCTL.ERASE to 1 to initiate the erasing.
+    __asm nop __endasm;    // Datasheet says a NOP is necessary after the instruction that initiates the erase.
+    __asm nop __endasm;    // We have extra NOPs to be safe.
+    __asm nop __endasm;
+    __asm nop __endasm;
+    while(FCTL & 0x80){};  // Wait for erasing to be complete.
+
+    if (bEraseOnly) return;
+
+	FADDR = address >> 1;  // not sure if i need to do this again.
+	flashWriteDmaConfig.VLEN_LENH = length >> 8;
+	flashWriteDmaConfig.LENL = length;
+	DMAIRQ &= ~(1<<0); // Clear DMAIF0 so we can poll it to see when the transfer finishes.
+	DMAARM |= (1<<0);
+	__asm lcall _startFlashWrite __endasm;
+	while(!(DMAIRQ & (1<<0))){} // wait for the transfer to finish by polling DMAIF0
+	while(FCTL & 0xC0){}  // wait for last word to finish writing by polling BUSY and SWBUSY
+}
+*/   
+
+//Note:  This erases a full page, not just the data at the address you specify.
+void eraseFlash(uint16 address)
+{
+	// first erase the page
+    FADDRH  = address >> 9;  // // hi byte of address / 2
+    FADDRL =0;
+    FCTL = 1;                      // Set FCTL.ERASE to 1 to initiate the erasing.
+    __asm nop __endasm;    // Datasheet says a NOP is necessary after the instruction that initiates the erase.
+    __asm nop __endasm;    // We have extra NOPs to be safe.
+    __asm nop __endasm;
+    __asm nop __endasm;
+    while(FCTL & 0x80){};  // Wait for erasing to be complete.
+}
+
+//Note:  This writes writebuffer to the specified flash address.
+void writeToFlash(uint16 address, uint16 length)
+{
+	// first erase the page
+	FADDR = address >> 1;  // not sure if i need to do this again.
+	flashWriteDmaConfig.VLEN_LENH = length >> 8;
+	flashWriteDmaConfig.LENL = length;
+	DMAIRQ &= ~(1<<0); // Clear DMAIF0 so we can poll it to see when the transfer finishes.
+	DMAARM |= (1<<0);
+	__asm lcall _startFlashWrite __endasm;
+	while(!(DMAIRQ & (1<<0))){} // wait for the transfer to finish by polling DMAIF0
+	while(FCTL & 0xC0){}  // wait for last word to finish writing by polling BUSY and SWBUSY
+}
+   
 // store RF config in FLASH, and retrieve it from here to put it in proper location (also incidentally in flash).
 // this allows persistent storage of RF params that will survive a restart of the wixel (although not a reload of wixel app obviously).
 // TO-DO get this working with DMA - need to erase memory block first, then write this to it.
@@ -545,7 +643,7 @@ int doUsbCommand()
 {
 	if(usb_command_is("HELLO"))
 	{
-		printf("OK WIXEL Dexbridge 0.1\r\n");
+		printf("OK WIXEL Dexbridge 0.3\r\n");
 		printf("OK current tick %lu\r\n", getMs());
 		printf("OK sleep mode is %s\r\n", (do_sleep)?"ON":"OFF");
 		return 1;
@@ -570,26 +668,20 @@ int doUsbCommand()
 			//printf("%s\r\n",&usb_command.usbCommandBuffer[5]);
 			//dex_tx_id = atol(&usb_command.usbCommandBuffer[5]);
 			dex_tx_id = asciiToDexcomSrc(&usb_command.usbCommandBuffer[5]);
+			//copy dex_tx_id into the writeBuffer so we can write it to flash
+			writeBuffer=dex_tx_id;
+			//printf("Erasing....\r\n");
+			eraseFlash(FLASH_TX_ID);
+			//printf("Writing....\r\n");
+			writeToFlash(FLASH_TX_ID, sizeof(dex_tx_id));
+			//printf("FLASH_TX_ID has %lu\r\n", *(uint32 XDATA *)FLASH_TX_ID); 
 		}
 		dexcom_src_to_ascii(dex_tx_id, srcAddr);
 		//printf("OK TXID is %lu\r\n", dex_tx_id);
+		printf("FLASH_TX_ID has %lu\r\n", *(uint32 XDATA *)FLASH_TX_ID); 
 		printf("OK TXID is %s (%lu)\r\n", srcAddr, dex_tx_id);
 		return 0;
 	}
-/*	if(memcmp(usb_command.usbCommandBuffer, "PKTDEL", 6) == 0)
-	{
-		if(usb_command.usbCommandBuffer[6] == ' ') 
-		{
-			uint8 c;
-			packet_wait_delay = (usb_command.usbCommandBuffer[7] && 0x3F) - 0x30;
-			for(c = 8; usb_command.usbCommandBuffer[c] != 0; c++) {
-				packet_wait_delay = packet_wait_delay * 10;
-				packet_wait_delay += (usb_command.usbCommandBuffer[7] && 0x3F) - 0x30;
-			}
-		}
-		printf("OK PKTDEL is %u\r\n", packet_wait_delay);
-		return 0;
-	} */
 	printf("Unrecognised command\r\n");
 	return 1;
 }
@@ -737,7 +829,7 @@ int WaitForPacket(uint16 milliseconds, Dexcom_packet* pkt, uint8 channel)
 				}
 			}
 			// the line below can be commented/uncommented for debugging.
-			else printf("%d bad CRC\r\n", channel);
+			//else printf("%d bad CRC\r\n", channel);
 			// pull the packet off the queue, so it isn't there next time we look.
 			radioQueueRxDoneWithPacket();
 			//return the correct code.
@@ -813,13 +905,16 @@ extern void basicUsbInit();
 void main()
 {   
 	systemInit();
+	//initialise the USB port
 	usbInit();
+	//initialise the dma channel for working with flash.
+	dma_Init();
 	//usbComRequestLineStateChangeNotification(LineStateChangeCallback);
-
-	// we actually only use USB, so no point wasting power on UART0
-//	openUart();
+	// we actually only use USB, so no point wasting power on UART
+	//	openUart();
 	init_usb_command(&usb_command);
 	
+
 	setRadioRegistersInitFunc(dex_RadioSettings);
 
 	radioQueueInit();
@@ -831,6 +926,8 @@ void main()
 		Dexcom_packet Pkt;
 		memset(&Pkt, 0, sizeof(Dexcom_packet));
 
+		dex_tx_id = *(uint32 XDATA *)FLASH_TX_ID;
+		//if(dex_tx_addr >= 0xFFFFFFFF) dex_tx_id = 0;
 		if(!get_packet(&Pkt))
 			continue;
 

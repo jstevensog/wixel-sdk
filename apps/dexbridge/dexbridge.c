@@ -95,7 +95,11 @@ XDATA uint8 startFlashWrite[] = {
 	0x75, 0xAE, 0x02,  // mov _FCTL, #2 :   Sets FCTRL.WRITE bit to 1, initiating a write to flash.
 	0x22               // ret           :   Returns to the calling function.
 };
-  
+/* dma_init:  	A function to initialise the DMA channel for use in erasing and storing data in flash.
+Parameters:		none.
+Returns :		void.
+Uses :			writeBuffer - A global variable we can address as the write buffer for writing data.
+*/
  void dma_Init(){
 	// Configure the flash write timer.  See section 12.3.5 of the datasheet.
 	FWT = 32;
@@ -121,33 +125,16 @@ XDATA uint8 startFlashWrite[] = {
 
 	DMA0CFG = (uint16)&flashWriteDmaConfig;
 }
-/*
-void writeToCPUFlash(uint16 address, uint16 length, uint8 bEraseOnly)
-{
-	// first erase the page
-    FADDRH  = address >> 9;  // // hi byte of address / 2
-    FADDRL =0;
-    FCTL = 1;                      // Set FCTL.ERASE to 1 to initiate the erasing.
-    __asm nop __endasm;    // Datasheet says a NOP is necessary after the instruction that initiates the erase.
-    __asm nop __endasm;    // We have extra NOPs to be safe.
-    __asm nop __endasm;
-    __asm nop __endasm;
-    while(FCTL & 0x80){};  // Wait for erasing to be complete.
-
-    if (bEraseOnly) return;
-
-	FADDR = address >> 1;  // not sure if i need to do this again.
-	flashWriteDmaConfig.VLEN_LENH = length >> 8;
-	flashWriteDmaConfig.LENL = length;
-	DMAIRQ &= ~(1<<0); // Clear DMAIF0 so we can poll it to see when the transfer finishes.
-	DMAARM |= (1<<0);
-	__asm lcall _startFlashWrite __endasm;
-	while(!(DMAIRQ & (1<<0))){} // wait for the transfer to finish by polling DMAIF0
-	while(FCTL & 0xC0){}  // wait for last word to finish writing by polling BUSY and SWBUSY
-}
-*/   
-
-//Note:  This erases a full page, not just the data at the address you specify.
+/* eraseFlash:	A function to erase a page of flash.
+Note:  This erases a full page of flash, not just the data at the address you specify.
+		It works out which page the address you speicfy is in, and erases that page.
+		Flash MUST be erased (set every bit in every byte of the flasn page to 1) before
+		you can change the data by writing to it.
+Parameters:
+	uint16	address		Address of the data that you want erased.  Read the note above.
+Returns:	void
+Uses:	The DMA channel initialised previously.
+*/
 void eraseFlash(uint16 address)
 {
 	// first erase the page
@@ -161,7 +148,15 @@ void eraseFlash(uint16 address)
     while(FCTL & 0x80){};  // Wait for erasing to be complete.
 }
 
-//Note:  This writes writebuffer to the specified flash address.
+/* eraseFlash:	A function to erase a page of flash.
+Note:  This writes writebuffer to the specified flash address.
+Parameters:
+	uint16	address		Address of the data that you want erased.  Read the note above.
+	uint16	length		The length of the data to write.  Basically the amount of data in writeBuffer.
+Returns:	void
+Uses:	The DMA channel initialised previously.
+	global writeBuffer	Stores the data to be written to flash.
+*/
 void writeToFlash(uint16 address, uint16 length)
 {
 	// first erase the page
@@ -678,7 +673,10 @@ int doUsbCommand()
 		}
 		dexcom_src_to_ascii(dex_tx_id, srcAddr);
 		//printf("OK TXID is %lu\r\n", dex_tx_id);
-		printf("FLASH_TX_ID has %lu\r\n", *(uint32 XDATA *)FLASH_TX_ID); 
+		//flash can  be read by casting the address of the section of flash we are interested in to the 
+		// type of XDATA we want to read.  That is what is happening in the line below.
+		//printf("FLASH_TX_ID has %lu\r\n", *(uint32 XDATA *)FLASH_TX_ID);
+		// tell them OK, we got the ID, and print it out as the ID and the long value we are using.
 		printf("OK TXID is %s (%lu)\r\n", srcAddr, dex_tx_id);
 		return 0;
 	}
@@ -925,7 +923,9 @@ void main()
 	{
 		Dexcom_packet Pkt;
 		memset(&Pkt, 0, sizeof(Dexcom_packet));
-
+		// read the flash stored value of our TXID.
+		// we do this by reading the address we are interested in directly, cast as a pointer to the 
+		// correct data type.
 		dex_tx_id = *(uint32 XDATA *)FLASH_TX_ID;
 		//if(dex_tx_addr >= 0xFFFFFFFF) dex_tx_id = 0;
 		if(!get_packet(&Pkt))

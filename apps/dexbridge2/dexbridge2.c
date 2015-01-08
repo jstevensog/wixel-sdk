@@ -642,6 +642,12 @@ int doCommand()
 		writing_flash=0;
 		return 0;
 	}
+	/* command 0xF0 is an acknowledgement sent by the controlling device of a data packet.
+		This acknowledgement lets us go to sleep immediately.
+		0x02, 0xF0
+	*/
+	if(command_buff.commandBuffer[0] == 0x02 && command_buff.commandBuffer[1] == 0xF0)
+		do_sleep = 1;
 	// we don't respond to unrecognised commands.
 	return 1;
 }

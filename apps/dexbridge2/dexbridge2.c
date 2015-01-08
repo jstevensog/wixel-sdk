@@ -1,25 +1,26 @@
-/** DEXBRIDGE:
+/** DEXBRIDGE2:
 All thanks to Adrien de Croy, who created dexterity-wixel and modified the
-wixel-sdk, upon which dexbridge is based.   
+wixel-sdk, upon which dexbridge2 is based.  Without his efforts in this and decoding the
+Dexcom protocol, this would not have been possible. 
 
 If you are going to build from this source file, please ensure you are using
 Adrien's wixel-sdk or it will not compile.
 
 == Description ==
 A program to allow a wixel to capture packets from a Dexcom G4 Platinum 
-Continuous Glucose Monitor transmitter and send them in text form
-out of the USB port.
+Continuous Glucose Monitor transmitter and send them in binary form
+out of the UART1 port, and USB port if it is connected.
 
-It also accepts the command TXID, which allows you to see or set the 
-Dexcom Transmitter ID in text form (ie 63GEA).  It will NOT display packets
-unless TXID is set.  Make sure you set it when the wixel is powered or
-detected on USB.
+Note that debug messages are sent out the USB port only.
 
-A Wixel running this app appears to the USB host as a Virtual COM Port,
-with USB product ID 0x2200.  To view the output of this app, connect to
-the Wixel's virtual COM port using a terminal program.  Be sure to set your
-terminal's line width to 120 characters or more to avoid line wrapping.
- 
+It also accepts various protocol packets on either the UART1 or USB ports, one of
+which allows you to see or set the Dexcom Transmitter ID in the form of an encoded
+long int (ie 63GEA).  It will NOT display packets
+unless TXID is set.  Your application will need to accept a "beacon" packet from the
+wixel, sent on both USB and UART0, and if the TXID value is zero, set it before the wixel
+will send Dexcom packets from the specified Transmitter.
+
+
 The app uses the radio_queue libray to receive packets.  It does not
 transmit any packets.
 
@@ -27,13 +28,33 @@ The output from this app takes the following format:
 
 The red LED indicates activity on the radio channel (packets being received).
 Since every radio packet has a chance of being lost, there is no guarantee
-that this app will pick up all the packets being sent, and some of
-what it does pick up will be corrupted (indicated by a failed CRC check).
+that this app will pick up all the packets being sent.  However, it does a really
+good job of detecting and filtering each packet if it is in range of the wixel.
 
-
-== Parameters ==
-
-radio_channel: See description in radio_link.h.
+Protocol descriptions:
+Data Packet - Bridge to App.  Sends the Dexcom transmitter data, and the bridge battery volts.
+	0x11	- length of packet.
+	0x00	- Packet type (00 means data packet)
+	uint32	- Dexcom Raw value.
+	uint32	- Dexcom Filtered value.
+	uint8	- Dexcom battery value.
+	uint16	- Bridge battery value.
+	uint32	- Dexcom encoded TXID the bridge is filtering on.
+	
+Data Acknowledge Packet - App to Bridge.  Sends an ack of the Data Packet and tells the wixel to go to sleep.
+	0x02	- length of packet.
+	0xF0	- Packet type (F0 means acknowleged, go to sleep.
+	
+TXID packet - App to Bridge.  Sends the TXID the App wants the bridge to filter on.  In response to a Data packet or beacon packet being wrong.
+	0x06	- Length of the packet.
+	0x01	- Packet Type (01 means TXID packet).
+	uint32	- Dexcom encoded TXID.
+	
+Beacon Packet - Bridge to App.  Sends the TXID it is filtering on to the app, so it can set it if it is wrong.
+				Sent when the wixel wakes up, or as acknowledgement of a TXID packet.
+	0x06	- Length of the packet.
+	0xF1	- Packet type (F1 means Beacon or TXID acknowledge)
+	uint32	- Dexcom encoded TXID.
 */
 
 /** Dependencies **************************************************************/
@@ -647,7 +668,7 @@ int doCommand()
 		0x02, 0xF0
 	*/
 	if(command_buff.commandBuffer[0] == 0x02 && command_buff.commandBuffer[1] == 0xF0)
-		do_sleep = 1;
+		//do_sleep = 1;
 	// we don't respond to unrecognised commands.
 	return 1;
 }

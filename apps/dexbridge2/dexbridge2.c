@@ -92,6 +92,10 @@ elsewhere.  This small bridge rig should be kept nearby the T1D at all times.
 #define USB_COMMAND_MAXLEN	(32)
 //defines the number of channels we will scan.
 #define NUM_CHANNELS		(4)
+//defines battery minimum and maximum voltage values for converting to percentage.
+// assuming that there is a 9M1 ohm resistor between VIN and P0_0, and a 2M7 ohm resistor between P0_0 and GND.
+#define BATTERY_MAXIMUM		(1548)
+#define BATTERY_MINIMUM		(1032)
 
 static volatile BIT do_sleep = 0;		// indicates we should go to sleep between packets
 static volatile BIT is_sleeping = 0;	// flag indicating we are sleeping.
@@ -114,6 +118,8 @@ XDATA uint8 msg_buf[82];
 int doServices(uint8 bWithProtocol);
 // prototype for getSrcValue function
 uint32 getSrcValue(char srcVal);
+// prototype for batteryPercent function
+uint8 battteryPercent(uint32 val);
 
 
 
@@ -391,6 +397,7 @@ void openUart()
 wake it again in 250 seconds.*/
 void makeAllOutputs(BIT value)
 {
+	//we only make the P1_ports low, and not P1_2 or P1_3
     int i = 10;
     for (;i < 17; i++)
 	{
@@ -612,6 +619,15 @@ void wakeBt() {
 	}
 }
 
+// function to convert a voltage value to a battery percentage
+uint8 batteryPercent(uint16 val){
+	if(val < BATTERY_MINIMUM)
+		return 0;
+	if(val > BATTERY_MAXIMUM)
+		return 100;
+	return (uint8)((val - BATTERY_MINIMUM)/(BATTERY_MAXIMUM-BATTERY_MINIMUM));
+}
+
 // structure of a raw record we will send.
 typedef struct _RawRecord
 {
@@ -620,7 +636,7 @@ typedef struct _RawRecord
 	uint32	raw;	//"raw" BGL value.
 	uint32	filtered;	//"filtered" BGL value 
 	uint8	dex_battery;	//battery value
-	uint16	my_battery;	//dexbridge battery value
+	uint8	my_battery;	//dexbridge battery value
 	uint32	dex_src_id;		//raw TXID of the Dexcom Transmitter
 	//int8	RSSI;	//RSSI level of the transmitter, used to determine if it is in range.
 	//uint8	txid;	//ID of this transmission.  Essentially a sequence from 0-63
@@ -635,7 +651,7 @@ void print_packet(Dexcom_packet* pPkt)
 	msg.raw = dex_num_decoder(pPkt->raw);
 	msg.filtered = dex_num_decoder(pPkt->filtered)*2;
 	msg.dex_battery = pPkt->battery;
-	msg.my_battery = adcRead(0 | ADC_REFERENCE_INTERNAL | ADC_BITS_7);
+	msg.my_battery = batteryPercent(adcRead(0 | ADC_REFERENCE_INTERNAL | ADC_BITS_7));
 	msg.dex_src_id = dex_tx_id;
 	msg.size = sizeof(msg);
 	send_data( (uint8 XDATA *)msg, msg.size);

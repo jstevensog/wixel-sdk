@@ -6,6 +6,13 @@ Dexcom protocol, this would not have been possible.
 If you are going to build from this source file, please ensure you are using
 Adrien's wixel-sdk or it will not compile.
 
+Thanks also to Stephen Black for his work on designing the bridge hardware based on
+the wixel.  This code requires a minor modification to his design to enable bridge battery
+monitoring.
+
+This code could be modified to use a wixel with any BLE module.
+It could likely also be modified to work with any CGM transmitter.
+
 == Description ==
 A program to allow a wixel to capture packets from a Dexcom G4 Platinum 
 Continuous Glucose Monitor transmitter and send them in binary form
@@ -23,6 +30,9 @@ will send Dexcom packets from the specified Transmitter.
 
 The app uses the radio_queue libray to receive packets.  It does not
 transmit any packets.
+
+The input to this app is mostly on thw radio reciever.  It also accepts an anlogue input on pin P0_0 (referenced to ground)
+connected to any rechargeable battery being used to power the wixel, HM-10/11 etc.
 
 The output from this app takes the following format:
 
@@ -55,6 +65,11 @@ Beacon Packet - Bridge to App.  Sends the TXID it is filtering on to the app, so
 	0x06	- Length of the packet.
 	0xF1	- Packet type (F1 means Beacon or TXID acknowledge)
 	uint32	- Dexcom encoded TXID.
+	
+Note:  The protocol can be expanded simply by adding other packet types.  I envision that a vibration module could
+be added, with a wixel output to drive it, so that the wixel will cause a vibration when the phone app sends a command.
+This would act as a backup to the phone alerts, and perhaps smart watch alerts, in case a T1D has left his phone/watch
+elsewhere.  This small bridge rig should be kept nearby the T1D at all times.
 */
 
 /** Dependencies **************************************************************/
@@ -84,11 +99,15 @@ static volatile BIT do_close_usb = 1;	// indicates we should close the USB port 
 static volatile BIT usb_connected;		// indicates DTR set on USB.  Meaning a terminal program is connected via USB for debug.
 static volatile BIT sent_beacon;		// indicates if we have sent our current dex_tx_id to the app.
 static volatile BIT writing_flash;		// indicates if we are writing to flash.
+static volatile BIT ble_sleeping;		// indicates if we have recieved a message from the BLE module that it is sleeping, or if false, it is awake.
 static volatile int start_channel = 0;	// the radio channel we will start looking for packets on.
-// char array to use to convert the Dexcom source address long to a string.
-char srcAddr[6];
+uint32 dly_ms=0;
+
 // Dexcom Transmitter Source Address to match against.
-uint32 dex_tx_id; 
+XDATA uint32 dex_tx_id; 
+
+// message  buffer for communicating with the BLE module
+XDATA uint8 msg_buf[82];
 
 // forward prototypes
 // prototype for doServices function.
@@ -364,23 +383,24 @@ void openUart()
  //   uart1SetStopBits(1);
 }
 
-// Configure the BlueTooth module with a name.
-void configBt() {
-    //uartEnable();
-    printf("AT+NAMEDxB%0x%0x%0x%0x\r", serialNumber[3],serialNumber[2],serialNumber[1],serialNumber[0]);
-    //uartDisable();
-}
+
 
 
 /** Functions *****************************************************************/
-/* the function that puts the system to sleep (PM2) and configures sleep timer to
+/* the functions that puts the system to sleep (PM2) and configures sleep timer to
 wake it again in 250 seconds.*/
 void makeAllOutputs(BIT value)
 {
-    int i = 0;
-    for (;i < 16; i++)
+    int i = 10;
+    for (;i < 17; i++)
 	{
-		setDigitalOutput(i, value);
+		//we don't set P1_2 low, it stays high.
+		if(i==12)
+			setDigitalOutput(i, HIGH);
+		else if(i==13)
+			setDigitalInput(i, PULLED);
+		else
+			setDigitalOutput(i, value);
     }
 }
 
@@ -541,14 +561,54 @@ void send_data( uint8 *msg, uint8 len)
 	{
 		uart1TxSendByte(msg[i]);
 	}
-	//uart1TxSend((const uint8 XDATA*)&msg, len);
 	if(usb_connected) {
 		while(usbComTxAvailable() < len) {};
 		for(i=0; i <= len; i++)
 		{
 			usbComTxSendByte(msg[i]);
 		}
-	//usbComTxSend((uint8 XDATA *)msg, len);
+	}
+}
+
+// Configure the BlueTooth module with a name.
+void configBt() {
+	uint8 length;
+	//uartEnable();
+	length = sprintf(msg_buf, "AT+NAMEDxB%0x%0x%0x%0x\r", serialNumber[3],serialNumber[2],serialNumber[1],serialNumber[0]);
+    send_data(msg_buf, length);
+    //uartDisable();
+}
+
+//Put the BlueTooth module to sleep
+void sleepBt() {
+	uint8 length = sprintf(msg_buf, "AT+SLEEP\r");
+	//pulse P1_2 low
+	setDigitalOutput(12,LOW);
+	dly_ms=getMs();
+	//wait for 1 second
+	while((getMs()-dly_ms) <=1000);
+	//send P1_2 high
+	setDigitalOutput(12,HIGH);
+	//send our sleep string
+	send_data(msg_buf, length);
+	//wait until we get the message the BT module is going to sleep
+	while(!ble_sleeping) {
+		doServices(1);
+	}
+}
+
+//Wake the BlueTooth module up.
+void wakeBt() {
+	uint8 i;
+	//create the wakeup message.
+	for(i=0; i<sizeof(msg_buf); i++) {
+		msg_buf[i]='W';
+	}
+	//send the message
+	send_data(msg_buf, sizeof(msg_buf));
+	//wait until we get the wakeup message from the BT module
+	while(!ble_sleeping) {
+		doServices(1);
 	}
 }
 
@@ -575,7 +635,7 @@ void print_packet(Dexcom_packet* pPkt)
 	msg.raw = dex_num_decoder(pPkt->raw);
 	msg.filtered = dex_num_decoder(pPkt->filtered)*2;
 	msg.dex_battery = pPkt->battery;
-	msg.my_battery = adcRead(0 | ADC_BITS_7);
+	msg.my_battery = adcRead(0 | ADC_REFERENCE_INTERNAL | ADC_BITS_7);
 	msg.dex_src_id = dex_tx_id;
 	msg.size = sizeof(msg);
 	send_data( (uint8 XDATA *)msg, msg.size);
@@ -619,7 +679,7 @@ uint8 init_command_buff(t_command_buff* pCmd)
 static t_command_buff command_buff;
 
 //decode a command received ??
-int command_buff_is(char* command)
+int commandBuffIs(char* command)
 {
 	uint8 len = strlen(command);
 	if(len != command_buff.nCurReadPos)
@@ -641,7 +701,7 @@ int doCommand()
 		which command the response is for.
 	*/
 	
-	/* command 0x01 preceeds a TXID being sent by controlling device on UART1
+	/* command 0x01 preceeds a TXID being sent by controlling device on UART1.  Packet length is 6 bytes.
 		0x01, lsw2, lsw1, msw2, msw1
 	*/
 	if(command_buff.commandBuffer[1] == 0x01 && command_buff.commandBuffer[0] == 0x06)
@@ -649,14 +709,10 @@ int doCommand()
 		//we are being given a TX ID 32 bit integer (already encoded)
 		//indicate we are writing to flash to stop any sleeping etc.
 		writing_flash=1;
-		//printf("%s\r\n",&command_buff.commandBuffer[5]);
 		memcpy(&dex_tx_id, &command_buff.commandBuffer[2],sizeof(dex_tx_id));
-		//printf("dex_tx_id: %lu\n", dex_tx_id);
 		//copy dex_tx_id into the writeBuffer so we can write it to flash
 		writeBuffer=dex_tx_id;
-		//printf("Erasing....\r\n");
 		eraseFlash(FLASH_TX_ID);
-		//printf("Writing....\r\n");
 		writeToFlash(FLASH_TX_ID, sizeof(dex_tx_id));
 		// send back the TXID we think we got in response
 		send_beacon();
@@ -664,11 +720,21 @@ int doCommand()
 		return 0;
 	}
 	/* command 0xF0 is an acknowledgement sent by the controlling device of a data packet.
-		This acknowledgement lets us go to sleep immediately.
+		This acknowledgement lets us go to sleep immediately.  Packet length is 2 bytes.
 		0x02, 0xF0
 	*/
-	if(command_buff.commandBuffer[0] == 0x02 && command_buff.commandBuffer[1] == 0xF0)
-		//do_sleep = 1;
+	/*if(command_buff.commandBuffer[0] == 0x02 && command_buff.commandBuffer[1] == 0xF0) {
+		do_sleep = 1;
+		return(0);
+	}*/
+	if(commandBuffIs("OK+SLEEP")) {
+		ble_sleeping=1;
+		return(0);
+	}
+	if(commandBuffIs("OK+WAKE")) {
+		ble_sleeping=0;
+		return(0);
+	}
 	// we don't respond to unrecognised commands.
 	return 1;
 }
@@ -683,7 +749,6 @@ int controlProtocolService()
 	//if we have timed out waiting for a command, clear the command buffer and return.
 	if(command_buff.nCurReadPos > 0 && (getMs() - cmd_to) > 2000) 
 	{
-		//printf("TIMEOUT\r\n");
 		// clear command buffer if there was anything
 		init_command_buff(&command_buff);
 		return nRet;
@@ -703,7 +768,6 @@ int controlProtocolService()
 		command_buff.nCurReadPos++;
 		// reset the command timeout.
 		cmd_to = getMs();
-		//printf("byte: %x, pos: %u, ms: %lu\n",b,command_buff.nCurReadPos, cmd_to);
 		// if it is the end for the byte string, we need to process the command
 		if(command_buff.nCurReadPos == command_buff.commandBuffer[0])
 		{
@@ -823,9 +887,6 @@ int WaitForPacket(uint16 milliseconds, Dexcom_packet* pkt, uint8 channel)
 						// ok, packet is valid, and we haven't seen it before.
 						// set the return code and save the packet id for later.
 						nRet = 1;
-						// lines below can be commented/uncommented for debugging
-						//printf("channel %d, %d, %d, ", channel, lastpktxid, txid);
-						//printf("channel %d, ", channel);
 						// save this packet txid for next time.
 						lastpktxid = txid;
 					}
@@ -880,7 +941,6 @@ int get_packet(Dexcom_packet* pPkt)
 	{
 		now = getMs();
 		delay = 50 - (now - last_cycle_time);
-		//printf("get_packet last_cycle_time: %u\r", now-last_cycle_time);
 		// We only sit on each channel for 25ms.  This is long enough to get a packet (4ms)
 		// but not so long as prevent doServices() to process the USB port.
 		switch(WaitForPacket(delay, pPkt, nChannel))
@@ -915,7 +975,6 @@ void LineStateChangeCallback(uint8 state)
 
 void main()
 {   
-	uint32 dly_ms=0;
 	systemInit();
 	//initialise Anlogue Input 0
 	P0INP = 0x1;
@@ -935,7 +994,14 @@ void main()
     radioQueueAllowCrcErrors = 1;
 	// these are reset in radioQueueInit and radioMacInit after our init func was already called
 	MCSM1 = 0;			// after RX go to idle, we don't transmit
+	// we haven't sent a beacon packet yet, so say so.
 	sent_beacon = 0;
+	//configure the P1_2 and P1_3 IO pins
+	setDigitalOutput(12,HIGH);
+	setDigitalInput(13,PULLED);
+	
+	//configure the bluetooth module
+	configBt();
 	while (1)
 	{
 		Dexcom_packet Pkt;
@@ -948,6 +1014,20 @@ void main()
 		//send our current dex_tx_id to the app, to let it know what we are looking for.  Only do this when we wake up (sent_beacon is false).
 		if(!sent_beacon)
 			send_beacon();
+		dly_ms=getMs();
+		// if dex_tx_id is zero, we do not have an ID to filter on.  So, we keep sending a beacon every 5 seconds until it is set.
+		// Comment out this while loop if you wish to use promiscuous mode and receive all Dexcom tx packets from any source (inadvisable).
+		// Promiscuous mode is allowed in waitForPacket() function (dex_tx_id == 0, will match any dexcom packet).  Just don't send the 
+		// wixel a TXID packet.
+		while(dex_tx_id == 0) {
+			// if 5 seconds are up, send a beacon.
+			if((getMs() - dly_ms) >= 5000){
+				send_beacon();
+				dly_ms=getMs();
+			}
+			//process any wixel inputs
+			doServices(1);
+		}
 		//continue to loop until we get a packet
 		if(!get_packet(&Pkt))
 			continue;
@@ -966,6 +1046,8 @@ void main()
 			RFST = 4;   //SIDLE
 			// clear sent_beacon so we send it next time we wake up.
 			sent_beacon = 0;
+			//put the BT module to sleep
+			sleepBt();
 			// turn all wixel LEDs on
 			LED_RED(1);
 			LED_YELLOW(1);
@@ -999,7 +1081,7 @@ void main()
 			radioMacInit();
 			MCSM1 = 0;			// after RX go to idle, we don't transmit
 			radioMacStrobe();
-			
+			wakeBt();
 			// watchdog mode??? this will do a reset?
 			//			WDCTL=0x0B;
 			// delayMs(50);    //wait for reset

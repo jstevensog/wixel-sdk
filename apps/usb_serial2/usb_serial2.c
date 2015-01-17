@@ -1,9 +1,14 @@
 /** usb_serial app:
+
 This app allows you to turn a Wixel into a USB-to-TTL serial adapter.
+
 For complete documentation and a precompiled version of this app, see the
 "USB-to-Serial App" section of the Pololu Wixel User's Guide:
 http://www.pololu.com/docs/0J46
+
+
 == Pinout ==
+
 P1_0 = nDTR: general purpose output pin controlled by computer
 P1_1 = nRTS: general purpose output pin controlled by computer
 P1_2 = nDSR: general purpose input pin reported to computer
@@ -36,9 +41,11 @@ P1_7 = RX:  receives data and sends it to the computer
 
 #include <usb.h>
 #include <usb_com.h>
+#include <gpio.h>
 
 #include <uart1.h>
 
+uint32	dly_ms;
 /** Functions *****************************************************************/
 void updateLeds()
 {
@@ -50,11 +57,24 @@ void updateLeds()
 void usbToUartService()
 {
     uint8 signals;
+    uint8 byte;
 
     // Data
     while(usbComRxAvailable() && uart1TxAvailable())
     {
-        uart1TxSendByte(usbComRxReceiveByte());
+	byte=usbComRxReceiveByte();
+	if (byte == 8) {
+		setDigitalOutput(12,HIGH);
+		LED_RED(1);
+		dly_ms=getMs();
+		//wait for 1 second
+		while((getMs()-dly_ms) <=105);
+		//send P1_2 high
+		setDigitalOutput(12,LOW);
+		LED_RED(0);
+	}
+
+        uart1TxSendByte(byte);
     }
 
     while(uart1RxAvailable() && usbComTxAvailable())
@@ -63,23 +83,26 @@ void usbToUartService()
     }
 
     // Control lines controlled by computer.
-    P1_0 = !(usbComRxControlSignals() & ACM_CONTROL_LINE_DTR);
-    P1_1 = !(usbComRxControlSignals() & ACM_CONTROL_LINE_RTS);
-    P1DIR |= (1<<0) | (1<<1);
+    //P1_0 = !(usbComRxControlSignals() & ACM_CONTROL_LINE_DTR);
+    //P1_1 = !(usbComRxControlSignals() & ACM_CONTROL_LINE_RTS);
+    //P1DIR |= (1<<0) | (1<<1);
 
     // Control lines controlled by device.
 
     signals = 0;
-    if (!P1_2){ signals |= ACM_SERIAL_STATE_TX_CARRIER; } // TX Carrier = DSR
-    if (!P1_3){ signals |= ACM_SERIAL_STATE_RX_CARRIER; } // RX Carrier = CD
-    usbComTxControlSignals(signals);
+    //if (!P1_2){ signals |= ACM_SERIAL_STATE_TX_CARRIER; } // TX Carrier = DSR
+    //if (!P1_3){ signals |= ACM_SERIAL_STATE_RX_CARRIER; } // RX Carrier = CD
+    //usbComTxControlSignals(signals);
 }
 
 void lineCodingChanged()
 {
-    uart1SetBaudRate(usbComLineCoding.dwDTERate);
-    uart1SetParity(usbComLineCoding.bParityType);
-    uart1SetStopBits(usbComLineCoding.bCharFormat);
+    //uart1SetBaudRate(usbComLineCoding.dwDTERate);
+    uart1SetBaudRate(9600);
+    //uart1SetParity(usbComLineCoding.bParityType);
+    uart1SetParity(0);
+    //uart1SetStopBits(usbComLineCoding.bCharFormat);
+    uart1SetStopBits(1);
 }
 
 void main()
@@ -87,6 +110,7 @@ void main()
     systemInit();
     usbInit();
     usbComLineCodingChangeHandler = &lineCodingChanged;
+	setDigitalOutput(12,LOW);
 
     uart1Init();
     lineCodingChanged();

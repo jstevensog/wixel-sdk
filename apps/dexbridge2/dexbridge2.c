@@ -105,7 +105,7 @@ static volatile BIT sent_beacon;		// indicates if we have sent our current dex_t
 static volatile BIT writing_flash;		// indicates if we are writing to flash.
 static volatile BIT ble_sleeping;		// indicates if we have recieved a message from the BLE module that it is sleeping, or if false, it is awake.
 static volatile int start_channel = 0;	// the radio channel we will start looking for packets on.
-uint32 dly_ms=0;
+uint32 dly_ms = 0;
 
 // Dexcom Transmitter Source Address to match against.
 XDATA uint32 dex_tx_id; 
@@ -229,15 +229,15 @@ void LoadRFParam(unsigned char XDATA* addr, uint8 default_val)
 		*addr = default_val; 
 }
 
-/*
-void uartEnable() {
-    U1UCR &= ~0x40; //CTS/RTS Off.  We always want it off.
-    U1CSR |= 0x40; // Recevier disable
-}
 
+void uartEnable() {
+    U1UCR &= ~0x40; //Hardware Flow Control (CTS/RTS) Off.  We always want it off.
+    U1CSR |= 0x40; // Recevier enable
+}
+/*
 void uartDisable() {
-    U1UCR &= ~0x40; //CTS/RTS Off. We always want it off.
-    U1CSR &= ~0x40; // Recevier disable.
+    U1UCR &= ~0x40; //Hardware Flow Control (CTS/RTS) Off.  We always want it off.
+//    U1CSR &= ~0x40; // Recevier disable.
 }
 */
 
@@ -384,9 +384,11 @@ void openUart()
 {
     uart1Init();
     uart1SetBaudRate(9600); // Set 9600 baud on UART1
-	U1UCR &= ~0x4C;	//disable CTS/RTS on UART1, no Parity, 1 Stop Bit
- //   uart1SetParity(0);
- //   uart1SetStopBits(1);
+	uart1SetParity(0);
+	uart1SetStopBits(1);
+	uartEnable();
+//	P1DIR |= 0x08; // RTS
+	//U1UCR &= ~0x4C;	//disable CTS/RTS on UART1, no Parity, 1 Stop Bit
 }
 
 
@@ -402,12 +404,12 @@ void makeAllOutputs(BIT value)
     for (;i < 17; i++)
 	{
 		//we don't set P1_2 low, it stays high.
-		if(i==12)
+/*		if(i==12)
 			setDigitalOutput(i, HIGH);
 		else if(i==13)
 			setDigitalInput(i, PULLED);
 		else
-			setDigitalOutput(i, value);
+*/			setDigitalOutput(i, value);
     }
 }
 
@@ -564,38 +566,47 @@ void send_data( uint8 *msg, uint8 len)
 	uint8 i = 0;
 	//wait until uart1 Tx Buffer is empty
 	while(uart1TxAvailable() < len) {};
-	for(i=0; i <= len; i++)
+	for(i=0; i < len; i++)
 	{
 		uart1TxSendByte(msg[i]);
 	}
 	if(usb_connected) {
 		while(usbComTxAvailable() < len) {};
-		for(i=0; i <= len; i++)
+		for(i=0; i < len; i++)
 		{
 			usbComTxSendByte(msg[i]);
 		}
 	}
 }
 
+// Send a pulse to the BlueTooth module SYS input
+void breakBt() {
+	//pulse P1_2 high
+	setDigitalOutput(12,HIGH);
+	delayMs(101);
+	//send P1_2 low
+	setDigitalOutput(12,HIGH);
+}
+
 // Configure the BlueTooth module with a name.
 void configBt() {
 	uint8 length;
-	//uartEnable();
-	length = sprintf(msg_buf, "AT+NAMEDxB%0x%0x%0x%0x\r", serialNumber[3],serialNumber[2],serialNumber[1],serialNumber[0]);
+	uartEnable();
+//	breakBt();
+	length = sprintf(msg_buf, "AT+NAMEDexbridge%02x", serialNumber[1], serialNumber[0]);
+	//printf("%s\n", msg_buf);
     send_data(msg_buf, length);
+	delayMs(1000);
+	length = sprintf(msg_buf,"AT+RESET");
+	send_data(msg_buf,length);
+	delayMs(2000);
     //uartDisable();
 }
 
 //Put the BlueTooth module to sleep
 void sleepBt() {
-	uint8 length = sprintf(msg_buf, "AT+SLEEP\r");
-	//pulse P1_2 low
-	setDigitalOutput(12,LOW);
-	dly_ms=getMs();
-	//wait for 1 second
-	while((getMs()-dly_ms) <=1000);
-	//send P1_2 high
-	setDigitalOutput(12,HIGH);
+	uint8 length = sprintf(msg_buf, "AT+SLEEP");
+	breakBt();
 	//send our sleep string
 	send_data(msg_buf, length);
 	//wait until we get the message the BT module is going to sleep
@@ -603,7 +614,6 @@ void sleepBt() {
 		doServices(1);
 	}
 }
-
 //Wake the BlueTooth module up.
 void wakeBt() {
 	uint8 i;
@@ -659,7 +669,7 @@ void print_packet(Dexcom_packet* pPkt)
 }
 
 //function to send a beacon with the TXID
-void send_beacon()
+void sendBeacon()
 {
 	//char array to store the response in.
 	uint8 XDATA cmd_response[6];
@@ -731,7 +741,7 @@ int doCommand()
 		eraseFlash(FLASH_TX_ID);
 		writeToFlash(FLASH_TX_ID, sizeof(dex_tx_id));
 		// send back the TXID we think we got in response
-		send_beacon();
+		sendBeacon();
 		writing_flash=0;
 		return 0;
 	}
@@ -743,7 +753,7 @@ int doCommand()
 		do_sleep = 1;
 		return(0);
 	}*/
-	if(commandBuffIs("OK+SLEEP")) {
+	if(commandBuffIs("OK+SLEE")) {
 		ble_sleeping=1;
 		return(0);
 	}
@@ -992,6 +1002,9 @@ void LineStateChangeCallback(uint8 state)
 void main()
 {   
 	systemInit();
+	//configure the P1_2 and P1_3 IO pins
+	makeAllOutputs(LOW);
+	//setDigitalInput(13,PULLED);
 	//initialise Anlogue Input 0
 	P0INP = 0x1;
 	//initialise the USB port
@@ -999,11 +1012,14 @@ void main()
 	//initialise the dma channel for working with flash.
 	dma_Init();
 	usbComRequestLineStateChangeNotification(LineStateChangeCallback);
-	// we actually only use USB, so no point wasting power on UART
+	// Open the UART and set it up for comms to HM-10
 	openUart();
+	delayMs(4000);
+	//configure the bluetooth module
+	configBt();
+
 	init_command_buff(&command_buff);
 	
-
 	setRadioRegistersInitFunc(dex_RadioSettings);
 
 	radioQueueInit();
@@ -1012,12 +1028,7 @@ void main()
 	MCSM1 = 0;			// after RX go to idle, we don't transmit
 	// we haven't sent a beacon packet yet, so say so.
 	sent_beacon = 0;
-	//configure the P1_2 and P1_3 IO pins
-	setDigitalOutput(12,HIGH);
-	setDigitalInput(13,PULLED);
 	
-	//configure the bluetooth module
-	configBt();
 	while (1)
 	{
 		Dexcom_packet Pkt;
@@ -1029,7 +1040,7 @@ void main()
 		if(dex_tx_id >= 0xFFFFFFFF) dex_tx_id = 0;
 		//send our current dex_tx_id to the app, to let it know what we are looking for.  Only do this when we wake up (sent_beacon is false).
 		if(!sent_beacon)
-			send_beacon();
+			sendBeacon();
 		dly_ms=getMs();
 		// if dex_tx_id is zero, we do not have an ID to filter on.  So, we keep sending a beacon every 5 seconds until it is set.
 		// Comment out this while loop if you wish to use promiscuous mode and receive all Dexcom tx packets from any source (inadvisable).
@@ -1038,7 +1049,7 @@ void main()
 		while(dex_tx_id == 0) {
 			// if 5 seconds are up, send a beacon.
 			if((getMs() - dly_ms) >= 5000){
-				send_beacon();
+				sendBeacon();
 				dly_ms=getMs();
 			}
 			//process any wixel inputs

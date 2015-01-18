@@ -93,9 +93,9 @@ elsewhere.  This small bridge rig should be kept nearby the T1D at all times.
 //defines the number of channels we will scan.
 #define NUM_CHANNELS		(4)
 //defines battery minimum and maximum voltage values for converting to percentage.
-// assuming that there is a 9M1 ohm resistor between VIN and P0_0, and a 2M7 ohm resistor between P0_0 and GND.
-#define BATTERY_MAXIMUM		(1548)
-#define BATTERY_MINIMUM		(1032)
+// assuming that there is a 10M ohm resistor between VIN and P0_0, and a 1M ohm resistor between P0_0 and GND.
+#define BATTERY_MAXIMUM		(521)
+#define BATTERY_MINIMUM		(347)
 
 static volatile BIT do_sleep = 0;		// indicates we should go to sleep between packets
 static volatile BIT is_sleeping = 0;	// flag indicating we are sleeping.
@@ -631,11 +631,15 @@ void wakeBt() {
 
 // function to convert a voltage value to a battery percentage
 uint8 batteryPercent(uint16 val){
+	float pct=val;
 	if(val < BATTERY_MINIMUM)
 		return 0;
 	if(val > BATTERY_MAXIMUM)
 		return 100;
-	return (uint8)((val - BATTERY_MINIMUM)/(BATTERY_MAXIMUM-BATTERY_MINIMUM));
+	pct = ((pct - BATTERY_MINIMUM)/(BATTERY_MAXIMUM-BATTERY_MINIMUM))*100;
+//	printf("%i, %i, %i, %i\n", val, BATTERY_MINIMUM, BATTERY_MAXIMUM, (uint8)pct);
+//	delayMs(2500);
+	return (uint8)pct;
 }
 
 // structure of a raw record we will send.

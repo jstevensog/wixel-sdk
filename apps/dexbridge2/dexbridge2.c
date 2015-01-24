@@ -665,7 +665,7 @@ void print_packet(Dexcom_packet* pPkt)
 	msg.raw = dex_num_decoder(pPkt->raw);
 	msg.filtered = dex_num_decoder(pPkt->filtered)*2;
 	msg.dex_battery = pPkt->battery;
-	msg.my_battery = batteryPercent(adcRead(0 | ADC_REFERENCE_INTERNAL | ADC_BITS_7));
+	msg.my_battery = batteryPercent(adcRead(0 | ADC_REFERENCE_INTERNAL));
 	msg.dex_src_id = dex_tx_id;
 	msg.size = sizeof(msg);
 	send_data( (uint8 XDATA *)msg, msg.size);
@@ -753,10 +753,10 @@ int doCommand()
 		This acknowledgement lets us go to sleep immediately.  Packet length is 2 bytes.
 		0x02, 0xF0
 	*/
-	/*if(command_buff.commandBuffer[0] == 0x02 && command_buff.commandBuffer[1] == 0xF0) {
+	if(command_buff.commandBuffer[0] == 0x02 && command_buff.commandBuffer[1] == 0xF0) {
 		do_sleep = 1;
 		return(0);
-	}*/
+	}
 	if(commandBuffIs("OK+SLEE")) {
 		ble_sleeping=1;
 		return(0);
@@ -1078,7 +1078,7 @@ void main()
 			// clear sent_beacon so we send it next time we wake up.
 			sent_beacon = 0;
 			//put the BT module to sleep
-			sleepBt();
+			//sleepBt();
 			// turn all wixel LEDs on
 			LED_RED(1);
 			LED_YELLOW(1);
@@ -1098,7 +1098,7 @@ void main()
 			LED_YELLOW(0);
 			LED_GREEN(0);
 			// sleep for aroud 300s
-			goToSleep(280);   //~295 s
+			goToSleep(270);   //
 			// still trying to find out what this is about, but I believe it is restoring state.
 			PICTL = savedPICTL;
 			P0IE = savedP0IE;
@@ -1112,7 +1112,7 @@ void main()
 			radioMacInit();
 			MCSM1 = 0;			// after RX go to idle, we don't transmit
 			radioMacStrobe();
-			wakeBt();
+			//wakeBt();
 			// watchdog mode??? this will do a reset?
 			//			WDCTL=0x0B;
 			// delayMs(50);    //wait for reset

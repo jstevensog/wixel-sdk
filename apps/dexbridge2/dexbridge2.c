@@ -86,6 +86,8 @@ elsewhere.  This small bridge rig should be kept nearby the T1D at all times.
 #include <uart1.h>
 
 
+// use power mode = 1 (PM2)
+#define SLEEP_MODE_USING (0x02)
 //define the FLASH_TX_ID address.  This is the address we store the Dexcom TX ID number in.
 #define FLASH_TX_ID		(0x77F8)
 //define the maximum command string length for USB commands.
@@ -413,9 +415,6 @@ void makeAllOutputs(BIT value)
     }
 }
 
-// use power mode = 1 (PM2)
-#define SLEEP_MODE_USING (0x01)
-
 // ISR for catching Sleep Timer interrupts
 ISR (ST, 0) 
 {
@@ -583,9 +582,10 @@ void send_data( uint8 *msg, uint8 len)
 void breakBt() {
 	//pulse P1_2 high
 	setDigitalOutput(12,HIGH);
-	delayMs(101);
+	LED_RED(1);
+	delayMs(200);
 	//send P1_2 low
-	setDigitalOutput(12,HIGH);
+	setDigitalOutput(12,LOW);
 }
 
 // Configure the BlueTooth module with a name.
@@ -624,7 +624,7 @@ void wakeBt() {
 	//send the message
 	send_data(msg_buf, sizeof(msg_buf));
 	//wait until we get the wakeup message from the BT module
-	while(!ble_sleeping) {
+	while(ble_sleeping) {
 		doServices(1);
 	}
 }
@@ -1032,6 +1032,7 @@ void main()
 	MCSM1 = 0;			// after RX go to idle, we don't transmit
 	// we haven't sent a beacon packet yet, so say so.
 	sent_beacon = 0;
+	LED_GREEN(1);
 	
 	while (1)
 	{
@@ -1086,7 +1087,7 @@ void main()
 			// wait 500 ms, processing services.
 			//delayMs(80);
 			dly_ms=getMs();
-			while((getMs() - dly_ms) < 500) {
+			while((getMs() - dly_ms) <= 500) {
 				// allow the wixel to complete any other tasks.
 				doServices(1);
 				// if we are writing flash rignt now, reset the delay to wait again.
@@ -1097,8 +1098,8 @@ void main()
 			LED_RED(0);
 			LED_YELLOW(0);
 			LED_GREEN(0);
-			// sleep for aroud 300s
-			goToSleep(270);   //
+			// sleep for around 300s
+			goToSleep(250);   //
 			// still trying to find out what this is about, but I believe it is restoring state.
 			PICTL = savedPICTL;
 			P0IE = savedP0IE;
@@ -1112,6 +1113,7 @@ void main()
 			radioMacInit();
 			MCSM1 = 0;			// after RX go to idle, we don't transmit
 			radioMacStrobe();
+			//wake the wixel
 			//wakeBt();
 			// watchdog mode??? this will do a reset?
 			//			WDCTL=0x0B;

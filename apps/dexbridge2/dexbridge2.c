@@ -98,6 +98,8 @@ elsewhere.  This small bridge rig should be kept nearby the T1D at all times.
 // assuming that there is a 10M ohm resistor between VIN and P0_0, and a 1M ohm resistor between P0_0 and GND.
 #define BATTERY_MAXIMUM		(521)
 #define BATTERY_MINIMUM		(347)
+// defines the Dexbridge protocol functional level.  Sent in each packet as the last byte.
+#define DEXBRIDGE_PROTO_LEVEL (0x01)
 
 static volatile BIT do_sleep = 0;		// indicates we should go to sleep between packets
 static volatile BIT is_sleeping = 0;	// flag indicating we are sleeping.
@@ -490,7 +492,7 @@ void goToSleep (uint16 seconds) {
 
 void updateLeds()
 {
-	if (do_sleep)
+/*	if (do_sleep)
 	{
 		if(is_sleeping)
 		{
@@ -501,7 +503,7 @@ void updateLeds()
 			LED_GREEN((getMs()&0x00000380) == 0x80);
 		}
 	}
-
+*/
 	LED_RED(radioQueueRxCurrentPacket());
 //	LED_RED(0);
 }
@@ -654,6 +656,7 @@ typedef struct _RawRecord
 	uint32	dex_src_id;		//raw TXID of the Dexcom Transmitter
 	//int8	RSSI;	//RSSI level of the transmitter, used to determine if it is in range.
 	//uint8	txid;	//ID of this transmission.  Essentially a sequence from 0-63
+	uint8	function; // Byte representing the dexbridge code funcitonality.  01 = this level.
 } RawRecord;
 
 //function to print the passed Dexom_packet as either binary or ascii.
@@ -668,6 +671,7 @@ void print_packet(Dexcom_packet* pPkt)
 	msg.my_battery = batteryPercent(adcRead(0 | ADC_REFERENCE_INTERNAL));
 	msg.dex_src_id = dex_tx_id;
 	msg.size = sizeof(msg);
+	msg.function = DEXBRIDGE_PROTO_LEVEL; // basic functionality, data packet (with ack), TXID packet, beacon packet (also TXID ack).
 	send_data( (uint8 XDATA *)msg, msg.size);
 	
 }
@@ -676,15 +680,16 @@ void print_packet(Dexcom_packet* pPkt)
 void sendBeacon()
 {
 	//char array to store the response in.
-	uint8 XDATA cmd_response[6];
+	uint8 XDATA cmd_response[7];
 	//prepare the response
 	//responding with number of bytes,
-	cmd_response[0] = 6;
+	cmd_response[0] = sizeof(cmd_response);
 	//responding to command 01,
 	cmd_response[1] = 0xF1;
 	//return the encoded TXID
 	memcpy(&cmd_response[2], &dex_tx_id, sizeof(dex_tx_id));
-	send_data( cmd_response, 6);
+	cmd_response[6] = DEXBRIDGE_PROTO_LEVEL;
+	send_data(cmd_response, sizeof(cmd_response));
 }
 
 //structure of a USB command
@@ -1081,11 +1086,10 @@ void main()
 			//put the BT module to sleep
 			//sleepBt();
 			// turn all wixel LEDs on
-			LED_RED(1);
-			LED_YELLOW(1);
-			LED_GREEN(1);
+			//LED_RED(1);
+			//LED_YELLOW(1);
+			//LED_GREEN(1);
 			// wait 500 ms, processing services.
-			//delayMs(80);
 			dly_ms=getMs();
 			while((getMs() - dly_ms) <= 500) {
 				// allow the wixel to complete any other tasks.

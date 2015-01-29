@@ -42,4 +42,5 @@ apps/*/*.20*
 
 #Allow
 !libraries/xpage/*
+!/apps/dexbridge2/dexbridge2.wxl
 

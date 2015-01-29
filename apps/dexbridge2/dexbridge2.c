@@ -96,8 +96,8 @@ elsewhere.  This small bridge rig should be kept nearby the T1D at all times.
 #define NUM_CHANNELS		(4)
 //defines battery minimum and maximum voltage values for converting to percentage.
 // assuming that there is a 10M ohm resistor between VIN and P0_0, and a 1M ohm resistor between P0_0 and GND.
-#define BATTERY_MAXIMUM		(521)
-#define BATTERY_MINIMUM		(347)
+#define BATTERY_MAXIMUM		(1792)
+#define BATTERY_MINIMUM		(1194)
 // defines the Dexbridge protocol functional level.  Sent in each packet as the last byte.
 #define DEXBRIDGE_PROTO_LEVEL (0x01)
 
@@ -1023,6 +1023,9 @@ void main()
 	usbComRequestLineStateChangeNotification(LineStateChangeCallback);
 	// Open the UART and set it up for comms to HM-10
 	openUart();
+	//turn on HM-1x using P1_0
+	setDigitalOutput(10,HIGH);
+	//wait 4 seconds, just in case it needs to settle.
 	delayMs(4000);
 	//configure the bluetooth module
 	configBt();
@@ -1058,6 +1061,7 @@ void main()
 		// wixel a TXID packet.
 		while(dex_tx_id == 0) {
 			// if 5 seconds are up, send a beacon.
+			LED_RED_TOGGLE();
 			if((getMs() - dly_ms) >= 5000){
 				sendBeacon();
 				dly_ms=getMs();
@@ -1065,6 +1069,7 @@ void main()
 			//process any wixel inputs
 			doServices(1);
 		}
+		LED_RED(0);
 		//continue to loop until we get a packet
 		if(!get_packet(&Pkt))
 			continue;
@@ -1074,7 +1079,7 @@ void main()
 		
 			
 		// can't safely sleep if we didn't get a packet!
-		if (do_sleep)
+		if (do_sleep && !usb_connected)
 		{
 			// not sure what this is about yet, but I believe it is saving state.
 		    uint8 savedPICTL = PICTL;
@@ -1083,8 +1088,9 @@ void main()
 			RFST = 4;   //SIDLE
 			// clear sent_beacon so we send it next time we wake up.
 			sent_beacon = 0;
-			//put the BT module to sleep
+			//put the HM-1x module to sleep
 			//sleepBt();
+			setDigitalOutput(10,LOW);
 			// turn all wixel LEDs on
 			//LED_RED(1);
 			//LED_YELLOW(1);
@@ -1117,8 +1123,11 @@ void main()
 			radioMacInit();
 			MCSM1 = 0;			// after RX go to idle, we don't transmit
 			radioMacStrobe();
-			//wake the wixel
+			//wake the HM-1x
 			//wakeBt();
+			setDigitalOutput(10,HIGH);
+			//give DexBridge time to connect
+			delayMs(5000);
 			// watchdog mode??? this will do a reset?
 			//			WDCTL=0x0B;
 			// delayMs(50);    //wait for reset

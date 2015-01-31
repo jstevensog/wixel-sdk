@@ -96,8 +96,8 @@ elsewhere.  This small bridge rig should be kept nearby the T1D at all times.
 #define NUM_CHANNELS		(4)
 //defines battery minimum and maximum voltage values for converting to percentage.
 // assuming that there is a 10M ohm resistor between VIN and P0_0, and a 1M ohm resistor between P0_0 and GND.
-#define BATTERY_MAXIMUM		(1792)
-#define BATTERY_MINIMUM		(1194)
+#define BATTERY_MAXIMUM		(1859)
+#define BATTERY_MINIMUM		(1239)
 // defines the Dexbridge protocol functional level.  Sent in each packet as the last byte.
 #define DEXBRIDGE_PROTO_LEVEL (0x01)
 
@@ -404,8 +404,8 @@ wake it again in 250 seconds.*/
 void makeAllOutputs(BIT value)
 {
 	//we only make the P1_ports low, and not P1_2 or P1_3
-    int i = 10;
-    for (;i < 17; i++)
+    int i;
+    for (i=10;i < 17; i++)
 	{
 		//we don't set P1_2 low, it stays high.
 /*		if(i==12)
@@ -434,6 +434,7 @@ ISR (ST, 0)
 		
 	// we not sleeping no more
 	is_sleeping = 0; 
+	setDigitalOutput(10,HIGH);
 }
 
 void goToSleep (uint16 seconds) {
@@ -504,6 +505,7 @@ void updateLeds()
 		}
 	}
 */
+	//LED_YELLOW(1);
 	LED_RED(radioQueueRxCurrentPacket());
 //	LED_RED(0);
 }
@@ -605,31 +607,6 @@ void configBt() {
     //uartDisable();
 }
 
-//Put the BlueTooth module to sleep
-void sleepBt() {
-	uint8 length = sprintf(msg_buf, "AT+SLEEP");
-	breakBt();
-	//send our sleep string
-	send_data(msg_buf, length);
-	//wait until we get the message the BT module is going to sleep
-	while(!ble_sleeping) {
-		doServices(1);
-	}
-}
-//Wake the BlueTooth module up.
-void wakeBt() {
-	uint8 i;
-	//create the wakeup message.
-	for(i=0; i<sizeof(msg_buf); i++) {
-		msg_buf[i]='W';
-	}
-	//send the message
-	send_data(msg_buf, sizeof(msg_buf));
-	//wait until we get the wakeup message from the BT module
-	while(ble_sleeping) {
-		doServices(1);
-	}
-}
 
 // function to convert a voltage value to a battery percentage
 uint8 batteryPercent(uint16 val){
@@ -1079,7 +1056,7 @@ void main()
 		
 			
 		// can't safely sleep if we didn't get a packet!
-		if (do_sleep && !usb_connected)
+		if (do_sleep && !usb_connected && !is_sleeping)
 		{
 			// not sure what this is about yet, but I believe it is saving state.
 		    uint8 savedPICTL = PICTL;
@@ -1088,9 +1065,6 @@ void main()
 			RFST = 4;   //SIDLE
 			// clear sent_beacon so we send it next time we wake up.
 			sent_beacon = 0;
-			//put the HM-1x module to sleep
-			//sleepBt();
-			setDigitalOutput(10,LOW);
 			// turn all wixel LEDs on
 			//LED_RED(1);
 			//LED_YELLOW(1);
@@ -1110,6 +1084,7 @@ void main()
 			LED_GREEN(0);
 			// sleep for around 300s
 			goToSleep(250);   //
+//			goToSleep(25);
 			// still trying to find out what this is about, but I believe it is restoring state.
 			PICTL = savedPICTL;
 			P0IE = savedP0IE;
@@ -1125,9 +1100,7 @@ void main()
 			radioMacStrobe();
 			//wake the HM-1x
 			//wakeBt();
-			setDigitalOutput(10,HIGH);
-			//give DexBridge time to connect
-			delayMs(5000);
+			//setDigitalOutput(10,HIGH);
 			// watchdog mode??? this will do a reset?
 			//			WDCTL=0x0B;
 			// delayMs(50);    //wait for reset

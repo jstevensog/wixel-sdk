@@ -5,8 +5,8 @@
 #include <usb_com.h>
 #include <stdio.h>
 
-#define BATTERY_MAXIMUM		(521)
-#define BATTERY_MINIMUM		(347)
+#define BATTERY_MAXIMUM		(1859)
+#define BATTERY_MINIMUM		(1239)
 
 static volatile BIT usb_connected;
 

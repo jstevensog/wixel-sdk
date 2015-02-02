@@ -110,6 +110,7 @@ static volatile BIT writing_flash;		// indicates if we are writing to flash.
 static volatile BIT ble_sleeping;		// indicates if we have recieved a message from the BLE module that it is sleeping, or if false, it is awake.
 static volatile int start_channel = 0;	// the radio channel we will start looking for packets on.
 uint32 dly_ms = 0;
+uint32 pkt_time = 0;
 
 // Dexcom Transmitter Source Address to match against.
 XDATA uint32 dex_tx_id; 
@@ -368,6 +369,7 @@ typedef struct _Dexcom_packet
 	uint8	LQI;
 } Dexcom_packet;
 
+/*
 // getPacketRSSI - returns the RSSI value from the Dexcom_packet passed to it.
 int8 getPacketRSSI(Dexcom_packet* p)
 {
@@ -375,7 +377,7 @@ int8 getPacketRSSI(Dexcom_packet* p)
 	return (p->RSSI/2)-73;
 }
 
-/*
+
 //getPacketPassedChecksum - returns the checksum of the Dexcom_packet passed to it.
 uint8 getPacketPassedChecksum(Dexcom_packet* p)
 {
@@ -434,11 +436,13 @@ ISR (ST, 0)
 		
 	// we not sleeping no more
 	is_sleeping = 0; 
+	// power on the BLE module
 	setDigitalOutput(10,HIGH);
 }
 
 void goToSleep (uint16 seconds) {
     unsigned char temp;
+	uint16 sleep_time;
     // The wixel docs note that any high output pins consume ~30uA
     makeAllOutputs(LOW);
 
@@ -452,18 +456,24 @@ void goToSleep (uint16 seconds) {
 	All interrupts not to be used to wake up from power modes must
 	be disabled before setting SLEEP.MODE!=00.*/
     
-	// sleep power mode 2 is incompatible with USB - as USB registers lose state in this mode.
 	
-	SLEEP |= SLEEP_MODE_USING; // SLEEP.MODE = PM2
 
-	if(do_close_usb)
+	//if(do_close_usb)
+	if(!usb_connected)
 	{
+		// sleep power mode 2 is incompatible with USB - as USB registers lose state in this mode.
+		SLEEP |= SLEEP_MODE_USING; // SLEEP.MODE = PM2
 		// disable the USB module
 		SLEEP &= ~(1<<7); // Disable the USB module (SLEEP.USB_EN = 0).
 		disableUsbPullup();
 		usbDeviceState = USB_STATE_DETACHED;
+	} else {
+		// As the USB is connected, we are going into PM1.
+		SLEEP |= 0x01;
 	}
-		
+	//ensure the HS XOSC is stable before we enter sleep mode.
+	while(!(SLEEP && 0x80)) {}
+	;
     // Reset timer, update EVENT0, and enter PM2
     // WORCTRL[2] = Reset Timer
     // WORCTRL[1:0] = Sleep Timer resolution
@@ -483,12 +493,14 @@ void goToSleep (uint16 seconds) {
     while (temp == WORTIME0) {};
 
     WORCTRL |= 0x03; // 2^15 periods
-    WOREVT1 = (seconds >> 8);
-    WOREVT0 = (seconds & 0xff); //300=293 s
+	sleep_time = seconds - ((getMs() - pkt_time)/1000) - 1;
+    WOREVT1 = (sleep_time >> 8);
+    WOREVT0 = (sleep_time & 0xff); //300=293 s
+	// tell everything we are sleeping
+	is_sleeping = 1;
 
     PCON |= 0x01; // PCON.IDLE = 1;
 	
-	is_sleeping = 1;
 }
 
 void updateLeds()
@@ -877,7 +889,7 @@ int WaitForPacket(uint16 milliseconds, Dexcom_packet* pkt, uint8 channel)
 			if(radioCrcPassed())
 			{
 				// there's a packet!
-				// Add the Freqency Offset Estimate from the FREQEST register to the channel offset.
+				// Add the Frequency Offset Estimate from the FREQEST register to the channel offset.
 				// This helps keep the receiver on track for any drift in the transmitter.
 				fOffset[channel] += FREQEST;
 				// fetch the packet.
@@ -922,7 +934,8 @@ int WaitForPacket(uint16 milliseconds, Dexcom_packet* pkt, uint8 channel)
 		pPkt	-	Pointer to a Dexcom_packet.
 		
 	Uses:
-				No global variables are used in this function.
+		pkt_time 
+				Sets this to the time the packet was aquired.
 		WaitForPacket(milliseconds, pkt, channel)
 				This function is called to obtain packets.  The return value determines if a packet is
 				available to process, or if something else occurred.
@@ -953,12 +966,13 @@ int get_packet(Dexcom_packet* pPkt)
 	{
 		now = getMs();
 		delay = 50 - (now - last_cycle_time);
-		// We only sit on each channel for 25ms.  This is long enough to get a packet (4ms)
+		// We only sit on each channel for 50ms.  This is long enough to get a packet (4ms)
 		// but not so long as prevent doServices() to process the USB port.
 		switch(WaitForPacket(delay, pPkt, nChannel))
 		{
 			case 1:			
 				// got a packet that passed CRC
+					pkt_time = getMs();
 					return 1;
 			case 0:
 			// timed out
@@ -1028,9 +1042,6 @@ void main()
 		// correct data type.
 		dex_tx_id = *(uint32 XDATA *)FLASH_TX_ID;
 		if(dex_tx_id >= 0xFFFFFFFF) dex_tx_id = 0;
-		//send our current dex_tx_id to the app, to let it know what we are looking for.  Only do this when we wake up (sent_beacon is false).
-		if(!sent_beacon)
-			sendBeacon();
 		dly_ms=getMs();
 		// if dex_tx_id is zero, we do not have an ID to filter on.  So, we keep sending a beacon every 5 seconds until it is set.
 		// Comment out this while loop if you wish to use promiscuous mode and receive all Dexcom tx packets from any source (inadvisable).
@@ -1047,6 +1058,16 @@ void main()
 			doServices(1);
 		}
 		LED_RED(0);
+		//send our current dex_tx_id to the app, to let it know what we are looking for.  Only do this when we wake up (sent_beacon is false).
+		if(!sent_beacon) {
+			//we give the BT module time to connect with the app.
+			dly_ms=getMs();
+			while((getMs() - dly_ms) <= 8000) {
+				doServices(1);
+			}
+			sendBeacon();
+			sent_beacon = 1;
+		}
 		//continue to loop until we get a packet
 		if(!get_packet(&Pkt))
 			continue;
@@ -1098,9 +1119,6 @@ void main()
 			radioMacInit();
 			MCSM1 = 0;			// after RX go to idle, we don't transmit
 			radioMacStrobe();
-			//wake the HM-1x
-			//wakeBt();
-			//setDigitalOutput(10,HIGH);
 			// watchdog mode??? this will do a reset?
 			//			WDCTL=0x0B;
 			// delayMs(50);    //wait for reset

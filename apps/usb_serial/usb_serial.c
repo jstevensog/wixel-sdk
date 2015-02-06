@@ -39,6 +39,8 @@ P1_7 = RX:  receives data and sends it to the computer
 
 #include <uart1.h>
 
+#include <gpio.h>
+
 /** Functions *****************************************************************/
 void updateLeds()
 {
@@ -90,6 +92,7 @@ void main()
 
     uart1Init();
     lineCodingChanged();
+	setDigitalOutput(10, HIGH);
 
     while(1)
     {

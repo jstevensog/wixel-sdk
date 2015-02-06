@@ -96,7 +96,7 @@ elsewhere.  This small bridge rig should be kept nearby the T1D at all times.
 #define NUM_CHANNELS		(4)
 //defines battery minimum and maximum voltage values for converting to percentage.
 // assuming that there is a 10M ohm resistor between VIN and P0_0, and a 1M ohm resistor between P0_0 and GND.
-#define BATTERY_MAXIMUM		(1859)
+#define BATTERY_MAXIMUM		(1766)
 #define BATTERY_MINIMUM		(1239)
 // defines the Dexbridge protocol functional level.  Sent in each packet as the last byte.
 #define DEXBRIDGE_PROTO_LEVEL (0x01)
@@ -427,17 +427,22 @@ ISR (ST, 0)
 	IEN0 &= ~0x20; 		// clear IEN0.STIE
 	WORIRQ &= ~0x11; 	// clear Sleep timer EVENT0_MASK and EVENT0_FLAG
 	WORCTRL &= ~0x03; 	// Set timer resolution back to 1 period.
+	U1UCR |= 0x80;	// flush UART1.
+	
 
 	if(do_close_usb)
 	{
 		// wake up USB again
 		usbPoll();
 	}
-		
 	// we not sleeping no more
 	is_sleeping = 0; 
+	do_sleep = 0;
+	sent_beacon = 0;
 	// power on the BLE module
 	setDigitalOutput(10,HIGH);
+	//we give the BT module time to connect with the app.
+	dly_ms=getMs();
 }
 
 void goToSleep (uint16 seconds) {
@@ -459,21 +464,10 @@ void goToSleep (uint16 seconds) {
 	
 
 	//if(do_close_usb)
-	if(!usb_connected)
-	{
-		// sleep power mode 2 is incompatible with USB - as USB registers lose state in this mode.
-		SLEEP |= SLEEP_MODE_USING; // SLEEP.MODE = PM2
-		// disable the USB module
-		SLEEP &= ~(1<<7); // Disable the USB module (SLEEP.USB_EN = 0).
-		disableUsbPullup();
-		usbDeviceState = USB_STATE_DETACHED;
-	} else {
-		// As the USB is connected, we are going into PM1.
-		SLEEP |= 0x01;
-	}
 	//ensure the HS XOSC is stable before we enter sleep mode.
-	while(!(SLEEP && 0x80)) {}
-	;
+	//while(!(SLEEP && 0x80)) {}
+	// make sure we are configured to use the correct clock (32kHz)
+	//CLKCON &= 0x3F;
     // Reset timer, update EVENT0, and enter PM2
     // WORCTRL[2] = Reset Timer
     // WORCTRL[1:0] = Sleep Timer resolution
@@ -492,20 +486,43 @@ void goToSleep (uint16 seconds) {
     temp = WORTIME0;
     while (temp == WORTIME0) {};
 
-    WORCTRL |= 0x03; // 2^15 periods
 	sleep_time = seconds - ((getMs() - pkt_time)/1000) - 1;
-    WOREVT1 = (sleep_time >> 8);
-    WOREVT0 = (sleep_time & 0xff); //300=293 s
+	sleep_time = seconds;
 	// tell everything we are sleeping
 	is_sleeping = 1;
 
+    WORCTRL |= 0x03; // 2^15 periods
+    // Wait for 2x+ve edge on 32kHz clock
+    temp = WORTIME0;
+    while (temp == WORTIME0) {};
+    temp = WORTIME0;
+    while (temp == WORTIME0) {};
+    WOREVT1 = (sleep_time >> 8);
+    WOREVT0 = (sleep_time & 0xff); //300=293 s
+
+	if(!usb_connected)
+	{
+		disableUsbPullup();
+		usbDeviceState = USB_STATE_DETACHED;
+		// disable the USB module
+		SLEEP &= ~(1<<7); // Disable the USB module (SLEEP.USB_EN = 0).
+		// sleep power mode 2 is incompatible with USB - as USB registers lose state in this mode.
+		SLEEP |= SLEEP_MODE_USING; // SLEEP.MODE = PM2
+	} else {
+		// As the USB is connected, we are going into PM1.
+		SLEEP |= 0x01;
+	}
+    __asm nop __endasm;		// We have extra NOPs to be safe.
+    __asm nop __endasm;
+    __asm nop __endasm;
+
     PCON |= 0x01; // PCON.IDLE = 1;
-	
+
 }
 
 void updateLeds()
 {
-/*	if (do_sleep)
+	if (do_sleep)
 	{
 		if(is_sleeping)
 		{
@@ -516,7 +533,7 @@ void updateLeds()
 			LED_GREEN((getMs()&0x00000380) == 0x80);
 		}
 	}
-*/
+
 	//LED_YELLOW(1);
 	LED_RED(radioQueueRxCurrentPacket());
 //	LED_RED(0);
@@ -595,22 +612,27 @@ void send_data( uint8 *msg, uint8 len)
 }
 
 // Send a pulse to the BlueTooth module SYS input
-void breakBt() {
+/*void breakBt() {
 	//pulse P1_2 high
 	setDigitalOutput(12,HIGH);
 	LED_RED(1);
 	delayMs(200);
 	//send P1_2 low
 	setDigitalOutput(12,LOW);
-}
+}*/
 
 // Configure the BlueTooth module with a name.
 void configBt() {
 	uint8 length;
 	uartEnable();
 //	breakBt();
-	length = sprintf(msg_buf, "AT+NAMEDexbridge%02x", serialNumber[1], serialNumber[0]);
-	//printf("%s\n", msg_buf);
+/*	length = sprintf(msg_buf,"AT+RENEW");
+	send_data(msg_buf,length);
+	delayMs(5000);
+	length = sprintf(msg_buf,"AT+PWRM1");
+	send_data(msg_buf,length);
+	delayMs(1000);
+*/	length = sprintf(msg_buf, "AT+NAMEDexbridge%02x", serialNumber[1], serialNumber[0]);
     send_data(msg_buf, length);
 	delayMs(1000);
 	length = sprintf(msg_buf,"AT+RESET");
@@ -651,6 +673,7 @@ typedef struct _RawRecord
 //function to print the passed Dexom_packet as either binary or ascii.
 void print_packet(Dexcom_packet* pPkt)
 {
+	//int dly_time = 0;
 	XDATA RawRecord msg;
 	//prepare the message
 	msg.cmd_code = 0x00;
@@ -662,7 +685,6 @@ void print_packet(Dexcom_packet* pPkt)
 	msg.size = sizeof(msg);
 	msg.function = DEXBRIDGE_PROTO_LEVEL; // basic functionality, data packet (with ack), TXID packet, beacon packet (also TXID ack).
 	send_data( (uint8 XDATA *)msg, msg.size);
-	
 }
 
 //function to send a beacon with the TXID
@@ -751,7 +773,7 @@ int doCommand()
 		do_sleep = 1;
 		return(0);
 	}
-	if(commandBuffIs("OK+SLEE")) {
+/*	if(commandBuffIs("OK+SLEE")) {
 		ble_sleeping=1;
 		return(0);
 	}
@@ -759,7 +781,7 @@ int doCommand()
 		ble_sleeping=0;
 		return(0);
 	}
-	// we don't respond to unrecognised commands.
+*/	// we don't respond to unrecognised commands.
 	return 1;
 }
 
@@ -1001,6 +1023,7 @@ void LineStateChangeCallback(uint8 state)
 
 void main()
 {   
+	uint16 rpt_pkt=0;
 	systemInit();
 	//configure the P1_2 and P1_3 IO pins
 	makeAllOutputs(LOW);
@@ -1042,15 +1065,25 @@ void main()
 		// correct data type.
 		dex_tx_id = *(uint32 XDATA *)FLASH_TX_ID;
 		if(dex_tx_id >= 0xFFFFFFFF) dex_tx_id = 0;
-		dly_ms=getMs();
+		//send our current dex_tx_id to the app, to let it know what we are looking for.  Only do this when we wake up (sent_beacon is false).
+		if(!sent_beacon) {
+			// let HM-1x module settle for a second, and hopefully connect.
+			while((getMs() - dly_ms) <= 1000) {
+				doServices(1);
+			}	
+
+			sendBeacon();
+			sent_beacon = 1;
+		}
 		// if dex_tx_id is zero, we do not have an ID to filter on.  So, we keep sending a beacon every 5 seconds until it is set.
 		// Comment out this while loop if you wish to use promiscuous mode and receive all Dexcom tx packets from any source (inadvisable).
 		// Promiscuous mode is allowed in waitForPacket() function (dex_tx_id == 0, will match any dexcom packet).  Just don't send the 
 		// wixel a TXID packet.
+		dly_ms=getMs();
 		while(dex_tx_id == 0) {
 			// if 5 seconds are up, send a beacon.
-			LED_RED_TOGGLE();
 			if((getMs() - dly_ms) >= 5000){
+				LED_RED_TOGGLE();
 				sendBeacon();
 				dly_ms=getMs();
 			}
@@ -1058,34 +1091,36 @@ void main()
 			doServices(1);
 		}
 		LED_RED(0);
-		//send our current dex_tx_id to the app, to let it know what we are looking for.  Only do this when we wake up (sent_beacon is false).
-		if(!sent_beacon) {
-			//we give the BT module time to connect with the app.
-			dly_ms=getMs();
-			while((getMs() - dly_ms) <= 8000) {
-				doServices(1);
-			}
-			sendBeacon();
-			sent_beacon = 1;
-		}
 		//continue to loop until we get a packet
 		if(!get_packet(&Pkt))
 			continue;
 
 		// ok, we got a packet
 		print_packet(&Pkt);
-		
+		// when we send a packet, we wait until we get an ACK to put us to sleep.
+		dly_ms = getMs();
+		rpt_pkt = dly_ms;
+		while (!do_sleep){
+			doServices(1);
+			if ((getMs() - dly_ms) > 1000) {
+				do_sleep = 1;
+				break;
+			}
+/*			if ((getMs() - rpt_pkt) > 5000) {
+				rpt_pkt = getMs();
+				print_packet(&Pkt);
+			}
+*/		}
 			
 		// can't safely sleep if we didn't get a packet!
-		if (do_sleep && !usb_connected && !is_sleeping)
+		if (do_sleep && !is_sleeping)
 		{
 			// not sure what this is about yet, but I believe it is saving state.
 		    uint8 savedPICTL = PICTL;
 			BIT savedP0IE = P0IE;
+			do_sleep = 0;
 
 			RFST = 4;   //SIDLE
-			// clear sent_beacon so we send it next time we wake up.
-			sent_beacon = 0;
 			// turn all wixel LEDs on
 			//LED_RED(1);
 			//LED_YELLOW(1);
@@ -1104,8 +1139,7 @@ void main()
 			LED_YELLOW(0);
 			LED_GREEN(0);
 			// sleep for around 300s
-			goToSleep(250);   //
-//			goToSleep(25);
+			goToSleep(200);   //
 			// still trying to find out what this is about, but I believe it is restoring state.
 			PICTL = savedPICTL;
 			P0IE = savedP0IE;
@@ -1122,6 +1156,9 @@ void main()
 			// watchdog mode??? this will do a reset?
 			//			WDCTL=0x0B;
 			// delayMs(50);    //wait for reset
+			// clear sent_beacon so we send it next time we wake up.
+			sent_beacon = 0;
+
 		}
 	}
 }

@@ -84,6 +84,7 @@ elsewhere.  This small bridge rig should be kept nearby the T1D at all times.
 #include <string.h>
 #include <ctype.h>
 #include <uart1.h>
+//#include <sleep.h>
 
 
 // use power mode = 1 (PM2)
@@ -103,20 +104,33 @@ elsewhere.  This small bridge rig should be kept nearby the T1D at all times.
 
 static volatile BIT do_sleep = 0;		// indicates we should go to sleep between packets
 static volatile BIT is_sleeping = 0;	// flag indicating we are sleeping.
-static volatile BIT do_close_usb = 1;	// indicates we should close the USB port when we go to sleep.
+//static volatile BIT do_close_usb = 1;	// indicates we should close the USB port when we go to sleep.
 static volatile BIT usb_connected;		// indicates DTR set on USB.  Meaning a terminal program is connected via USB for debug.
 static volatile BIT sent_beacon;		// indicates if we have sent our current dex_tx_id to the app.
 static volatile BIT writing_flash;		// indicates if we are writing to flash.
 static volatile BIT ble_sleeping;		// indicates if we have recieved a message from the BLE module that it is sleeping, or if false, it is awake.
+static volatile BIT dex_tx_id_set;		// indicates if the Dexcom Transmitter id (dex_tx_id) has been set.  Set in doServices.
+static volatile BIT ble_connected;		// bit indicating the BLE module is connected to the phone.  Prevents us from sending data without this.
 static volatile int start_channel = 0;	// the radio channel we will start looking for packets on.
-uint32 dly_ms = 0;
-uint32 pkt_time = 0;
+static volatile uint32 dly_ms = 0;
+static volatile uint32 pkt_time = 0;
+static volatile uint32 wake_time = 0;
+static uint8 sleep_mode = 0;
+static uint8 save_IEN0;
+static uint8 save_IEN1;
+static uint8 save_IEN2;
 
 // Dexcom Transmitter Source Address to match against.
 XDATA uint32 dex_tx_id; 
 
 // message  buffer for communicating with the BLE module
 XDATA uint8 msg_buf[82];
+
+// Initialization of source buffers and DMA descriptor for the DMA transfer during PM2 sleep.
+unsigned char XDATA PM2_BUF[7] = {0x06,0x06,0x06,0x06,0x06,0x06,0x04};
+//unsigned char XDATA PM3_BUF[7] = {0x07,0x07,0x07,0x07,0x07,0x07,0x04};
+unsigned char XDATA dmaDesc[8] = {0x00,0x00,0xDF,0xBE,0x00,0x07,0x20,0x42};
+
 
 // forward prototypes
 // prototype for doServices function.
@@ -397,6 +411,17 @@ void openUart()
 	//U1UCR &= ~0x4C;	//disable CTS/RTS on UART1, no Parity, 1 Stop Bit
 }
 
+// function to wait a specified number of milliseconds, whilst processing services.
+void waitDoingServices (uint32 wait_time, volatile BIT break_flag, BIT bProtocolServices ) {
+	uint32 start_wait;
+	start_wait = getMs();
+	while ((getMs() - start_wait) < wait_time) {
+		doServices(bProtocolServices);
+		if(break_flag) return;
+		delayMs(20);
+	}
+}
+
 
 
 
@@ -409,64 +434,263 @@ void makeAllOutputs(BIT value)
     int i;
     for (i=10;i < 17; i++)
 	{
-		//we don't set P1_2 low, it stays high.
-/*		if(i==12)
-			setDigitalOutput(i, HIGH);
-		else if(i==13)
-			setDigitalInput(i, PULLED);
-		else
-*/			setDigitalOutput(i, value);
+		setDigitalOutput(i, value);
     }
 }
 
+void sleepInit(void)
+{
+   WORIRQ  |= (1<<4); // Enable Event0 interrupt  
+}
+
+ISR(ST, 1)
+{
+   // Clear IRCON.STIF (Sleep Timer CPU interrupt flag)
+   IRCON &= 0x7F;
+   // Clear WORIRQ.EVENT0_FLAG (Sleep Timer peripheral interrupt flag)
+   // This is required for the CC111xFx/CC251xFx only!
+   WORIRQ &= 0xFE;
+   
+   SLEEP &= 0xFC; // Not required when resuming from PM0; Clear SLEEP.MODE[1:0]
+}
+
+void switchToRCOSC(void)
+{
+   // Power up [HS RCOSC] (SLEEP.OSC_PD = 0)
+   SLEEP &= ~0x04;
+   // Wait until [HS RCOSC] is stable (SLEEP.HFRC_STB = 1)
+   while ( ! (SLEEP & 0x20) );
+   // Switch system clock source to HS RCOSC (CLKCON.OSC = 1),
+   // and set max CPU clock speed (CLKCON.CLKSPD = 1).
+   CLKCON = (CLKCON & ~0x07) | 0x40 | 0x01;
+   // Wait until system clock source has actually changed (CLKCON.OSC = 1)
+   while ( !(CLKCON & 0x40) );
+   // Power down [HS XOSC] (SLEEP.OSC_PD = 1)
+   SLEEP |= 0x04;
+}
+
+
+/*
 // ISR for catching Sleep Timer interrupts
 ISR (ST, 0) 
 {
 	IRCON &= ~0x80; 	// clear IRCON.STIF
-	SLEEP &= ~SLEEP_MODE_USING; 	// clear SLEEP.MODE
-	IEN0 &= ~0x20; 		// clear IEN0.STIE
+	SLEEP &= ~sleep_mode; 	// clear SLEEP.MODE
 	WORIRQ &= ~0x11; 	// clear Sleep timer EVENT0_MASK and EVENT0_FLAG
 	WORCTRL &= ~0x03; 	// Set timer resolution back to 1 period.
+
+	IEN0 = save_IEN0;
+	IEN0 &= ~0x20; 		// clear IEN0.STIE
+	IEN1 = save_IEN1;	// restore IEN1
+	IEN2 = save_IEN2;	// restore IEN2
 	U1UCR |= 0x80;	// flush UART1.
 	
 
-	if(do_close_usb)
-	{
-		// wake up USB again
-		usbPoll();
-	}
+//	if(do_close_usb)
+//	{
+//		// wake up USB again
+//		usbPoll();
+//	}
+
 	// we not sleeping no more
 	is_sleeping = 0; 
-	do_sleep = 0;
-	sent_beacon = 0;
 	// power on the BLE module
-	setDigitalOutput(10,HIGH);
-	//we give the BT module time to connect with the app.
-	dly_ms=getMs();
+	//setDigitalOutput(10,1);
 }
+*/
 
 void goToSleep (uint16 seconds) {
     unsigned char temp;
-	uint16 sleep_time;
+	//uint16 sleep_time = 0;
+	unsigned short sleep_time =0;
+	uint32 diff = 0;
+	uint32 now = 0;
+	//initialise sleep library
+	sleepInit();
+
     // The wixel docs note that any high output pins consume ~30uA
     makeAllOutputs(LOW);
-
-    IEN0 |= 0x20; // Enable global ST interrupt [IEN0.STIE]
+	/*P1_0 = 0;
+	P1DIR |= 1;
+	// make sure HM-1x is depowered.
+	while(P1_0 == 1) { 
+		doServices(0);'
+	}
+	*/
+/*    //IEN0 |= 0x20; // Enable global ST interrupt [IEN0.STIE]
+	save_IEN0 = IEN0;
+	IEN0 = 0xA0; // Enable global ST interrupt [IEN0.EA and IEN0.STIE]
+	save_IEN1 = IEN1;
+	IEN1 &= 0xB0;
+	save_IEN2 = IEN2;
+	IEN2 &= 0xB0;
     WORIRQ |= 0x10; // enable sleep timer interrupt [EVENT0_MASK]
+*/
+/*	//Ensure we are running the highest possible clock speed.
+	CLKCON |=0x03;
+	CLKCON &= ~0x40;
+	//ensure the HS XOSC is stable before we enter sleep mode.
+	while(!(SLEEP && 0x80)) {}
 
-	/* the sleep mode i've chosen is PM2. According to the CC251132 datasheet,
+*/	/* the sleep mode i've chosen is PM2. According to the CC251132 datasheet,
 	typical power consumption from the SoC should be around 0.5uA */
 	/*The SLEEP.MODE will be cleared to 00 by HW when power
 	mode is entered, thus interrupts are enabled during power modes.
 	All interrupts not to be used to wake up from power modes must
 	be disabled before setting SLEEP.MODE!=00.*/
-    
-	
+	diff = seconds;
+	//printf("\r\ndiff: %lu\r\n", diff);
+	diff = diff * 1000;
+	//printf("\r\ndiff * 1000: %lu\r\n", diff);
+	diff = diff - (getMs() - pkt_time);
+	//printf("\r\ndiff - getMs-pkt_time: %lu\r\n", diff);
+	diff = diff/1000;
+	//printf("\r\ndiff/1000: %lu\r\n", diff);
+	sleep_time = (unsigned short)diff;
+	//sleep_time = seconds;
+//	printf("\r\nseconds: %u, sleep_time: %u, now-pkt_time: %lu\r\n", seconds, sleep_time, (getMs()-pkt_time));
+	while(usb_connected && (usbComTxAvailable() < 128)) {
+		usbComService();
+	}
+	if(sleep_time <= 0 || sleep_time > seconds) {
+		do_sleep = 0;
+		pkt_time = 0;
+		return;
+	}
+	is_sleeping = 1;
 
-	//if(do_close_usb)
-	//ensure the HS XOSC is stable before we enter sleep mode.
-	//while(!(SLEEP && 0x80)) {}
-	// make sure we are configured to use the correct clock (32kHz)
+	if(!usb_connected)
+	{
+		unsigned char storedDescHigh, storedDescLow;
+		BIT	storedDma0Armed;
+		unsigned char storedIEN0, storedIEN1, storedIEN2;
+		disableUsbPullup();
+		usbDeviceState = USB_STATE_DETACHED;
+		// disable the USB module
+		SLEEP &= ~(1<<7); // Disable the USB module (SLEEP.USB_EN = 0).
+		// sleep power mode 2 is incompatible with USB - as USB registers lose state in this mode.
+
+   
+		//desired_event0 = seconds;
+		
+		// set Sleep Timer to the lowest resolution (1 second)      
+		WORCTRL |= 0x03; 
+		// must be using RC OSC before going to PM2
+		switchToRCOSC();
+		
+		// Following DMA code is a workaround for a bug described in Design Note
+		// DN106 section 4.1.4 where there is a small chance that the sleep mode
+		// bits are faulty set to a value other than zero and this prevents the
+		// processor from waking up correctly (appears to hang)
+		
+		// Store current DMA channel 0 descriptor and abort any ongoing transfers,
+		// if the channel is in use.
+		storedDescHigh = DMA0CFGH;
+		storedDescLow = DMA0CFGL;
+		storedDma0Armed = DMAARM & 0x01;
+		DMAARM |= 0x81; // Abort transfers on DMA Channel 0; Set ABORT and DMAARM0
+		// Update descriptor with correct source.
+		dmaDesc[0] = ((unsigned int)& PM2_BUF) >> 8;
+		dmaDesc[1] = (unsigned int)& PM2_BUF;
+		// Associate the descriptor with DMA channel 0 and arm the DMA channel
+		DMA0CFGH = ((unsigned int)&dmaDesc) >> 8;
+		DMA0CFGL = (unsigned int)&dmaDesc;
+		DMAARM = 0x01; // Arm Channel 0; DMAARM0
+		
+		// save enabled interrupts
+		storedIEN0 = IEN0;
+		storedIEN1 = IEN1;
+		storedIEN2 = IEN2; 
+		
+		// make sure interrupts aren't completely disabled
+		// and enable sleep timer interrupt
+		IEN0 |= 0xA0; // Set EA and STIE bits
+         
+		// then disable all interrupts except the sleep timer
+		IEN0 &= 0xA0;
+		IEN1 &= ~0x3F;
+		IEN2 &= ~0x3F;
+		
+		WORCTRL |= 0x04; // Reset Sleep Timer
+		temp = WORTIME0;
+		while(temp == WORTIME0); // Wait until a positive 32 kHz edge
+		temp = WORTIME0;
+		while(temp == WORTIME0); // Wait until a positive 32 kHz edge
+		WOREVT1 = sleep_time >> 8; // Set EVENT0, high byte
+		WOREVT0 = sleep_time; // Set EVENT0, low byte
+		MEMCTR |= 0x02;  // Flash cache must be disabled.
+		SLEEP = 0x06; // PM2, disable USB, power down other oscillators
+		
+		__asm nop __endasm; 
+		__asm nop __endasm; 
+		__asm nop __endasm;
+		
+		if (SLEEP & 0x03) {
+			__asm mov 0xD7,#0x01 __endasm; // DMAREQ = 0x01;
+			__asm nop __endasm;            // Needed to perfectly align the DMA transfer.
+			__asm orl 0x87,#0x01 __endasm; // PCON |= 0x01;
+			__asm nop __endasm;      
+		}
+		// restore enabled interrupts
+		IEN0 = storedIEN0;
+		IEN1 = storedIEN1;
+		IEN2 = storedIEN2; 
+		// restore DMA descriptor
+		DMA0CFGH = storedDescHigh;
+		DMA0CFGL = storedDescLow;
+		if (storedDma0Armed)
+			DMAARM |= 0x01; // Set DMA0ARM
+   
+		// Switch back to high speed
+		boardClockInit();   
+
+	} else {
+		// set Sleep Timer to the lowest resolution (1 second)      
+		WORCTRL |= 0x03; // WOR_RES[1:0]
+		// make sure interrupts aren't completely disabled
+		// and enable sleep timer interrupt
+		IEN0 |= 0xA0; // Set EA and STIE bits
+       
+		WORCTRL |= 0x04; // Reset Sleep Timer; WOR_RESET
+		temp = WORTIME0;
+		while(temp == WORTIME0); // Wait until a positive 32 kHz edge
+		temp = WORTIME0;
+		while(temp == WORTIME0); // Wait until a positive 32 kHz edge
+		WOREVT1 = sleep_time >> 8; // Set EVENT0, high byte
+		WOREVT0 = sleep_time; // Set EVENT0, low byte
+
+		// Set SLEEP.MODE according to PM1
+
+		SLEEP = (SLEEP & 0xFC) | 0x01; // SLEEP.MODE[1:0]
+		// Apply three NOPs to allow the corresponding interrupt blocking to take
+		// effect, before verifying the SLEEP.MODE bits below. Note that all
+		// interrupts are blocked when SLEEP.MODE ? 0, thus the time between
+		// setting SLEEP.MODE ? 0, and asserting PCON.IDLE should be as short as
+		// possible. If an interrupt occurs before the NOPs have completed, then
+		// the enabled ISR shall clear the SLEEP.MODE bits, according to the code
+		// in Figure 7.
+
+		__asm nop __endasm;
+		__asm nop __endasm;
+		__asm nop __endasm;
+
+		// If no interrupt was executed in between the above NOPs, then all
+		// interrupts are effectively blocked when reaching this code position.
+		// If the SLEEP.MODE bits have been cleared at this point, which means
+		// that an ISR has indeed executed in between the above NOPs, then the
+		// application will not enter PM{1 – 3} !
+   
+		if (SLEEP & 0x03) // SLEEP.MODE[1:0]
+		{
+			// Set PCON.IDLE to enter the selected PM, e.g. PM1.
+			PCON |= 0x01;
+			// The SoC is now in PM and will only wake up upon Sleep Timer interrupt
+			// or external Port interrupt.
+			__asm nop __endasm;    
+		}
+	}
+	is_sleeping = 0;
+	// make sure we are configured to use the correct clock (32.768kHz crystal)
 	//CLKCON &= 0x3F;
     // Reset timer, update EVENT0, and enter PM2
     // WORCTRL[2] = Reset Timer
@@ -478,62 +702,51 @@ void goToSleep (uint16 seconds) {
 
     // t(event0) = (1/32768)*(WOREVT1 << 8 + WOREVT0) * timer res
     // e.g. WOREVT1=0,WOREVT0=1,res=2^15 ~= 0.9766 second
-
+	
+/*
+    WORCTRL |= 0x03; // 2^15 periods
     WORCTRL |= 0x04; // Reset
     // Wait for 2x+ve edge on 32kHz clock
     temp = WORTIME0;
     while (temp == WORTIME0) {};
     temp = WORTIME0;
     while (temp == WORTIME0) {};
-
-	sleep_time = seconds - ((getMs() - pkt_time)/1000) - 1;
-	sleep_time = seconds;
-	// tell everything we are sleeping
-	is_sleeping = 1;
-
-    WORCTRL |= 0x03; // 2^15 periods
-    // Wait for 2x+ve edge on 32kHz clock
+*/
+/*    // Wait for 2x+ve edge on 32kHz clock
     temp = WORTIME0;
     while (temp == WORTIME0) {};
-    temp = WORTIME0;
-    while (temp == WORTIME0) {};
-    WOREVT1 = (sleep_time >> 8);
+//    temp = WORTIME0;
+//    while (temp == WORTIME0) {};
+*/
+ /*   WOREVT1 = (sleep_time >> 8);
     WOREVT0 = (sleep_time & 0xff); //300=293 s
 
-	if(!usb_connected)
-	{
-		disableUsbPullup();
-		usbDeviceState = USB_STATE_DETACHED;
-		// disable the USB module
-		SLEEP &= ~(1<<7); // Disable the USB module (SLEEP.USB_EN = 0).
-		// sleep power mode 2 is incompatible with USB - as USB registers lose state in this mode.
-		SLEEP |= SLEEP_MODE_USING; // SLEEP.MODE = PM2
-	} else {
-		// As the USB is connected, we are going into PM1.
-		SLEEP |= 0x01;
-	}
-    __asm nop __endasm;		// We have extra NOPs to be safe.
-    __asm nop __endasm;
-    __asm nop __endasm;
+	SLEEP |= sleep_mode;	// set the sleep mode.
+	__asm nop __endasm;		// We have extra NOPs to be safe.
+	__asm nop __endasm;
+	__asm nop __endasm;
 
-    PCON |= 0x01; // PCON.IDLE = 1;
-
+	if((SLEEP && sleep_mode) != 0 ) PCON |= 0x01; // PCON.IDLE = 1;
+	// tell everything we are sleeping
+*/
+//	is_sleeping = 1;
 }
 
 void updateLeds()
 {
 	if (do_sleep)
 	{
-		if(is_sleeping)
-		{
-			LED_YELLOW((getMs()&0x00000F00) == 0x100);
-		}
-		else
-		{
+//		if(is_sleeping)
+//		{
+//			LED_YELLOW((getMs()&0x00000F00) == 0x100);
+//		}
+//		else
+//		{
 			LED_GREEN((getMs()&0x00000380) == 0x80);
-		}
+//		}
 	}
 
+	LED_YELLOW(ble_connected);
 	//LED_YELLOW(1);
 	LED_RED(radioQueueRxCurrentPacket());
 //	LED_RED(0);
@@ -602,15 +815,31 @@ void send_data( uint8 *msg, uint8 len)
 	{
 		uart1TxSendByte(msg[i]);
 	}
+	while(uart1TxAvailable()<255) doServices(1);
 	if(usb_connected) {
 		while(usbComTxAvailable() < len) {};
 		for(i=0; i < len; i++)
 		{
 			usbComTxSendByte(msg[i]);
 		}
+		while(usbComTxAvailable()<128) doServices(1);
 	}
 }
 
+// function called by doServices to monitor the state of the BLE connection
+void bleConnectMonitor() {
+	static uint32 timer;
+	static BIT last_check;
+	if (P1_2 && !ble_connected && !last_check) {
+		timer=getMs();
+		last_check = 1;
+	} else if (!P1_2 && ble_connected) {
+		last_check = 0;
+		ble_connected = 0;
+	} else if (P1_2 && last_check && ((getMs() - timer)>500)) {
+		ble_connected = 1;
+	}
+}
 // Send a pulse to the BlueTooth module SYS input
 /*void breakBt() {
 	//pulse P1_2 high
@@ -634,10 +863,10 @@ void configBt() {
 	delayMs(1000);
 */	length = sprintf(msg_buf, "AT+NAMEDexbridge%02x", serialNumber[1], serialNumber[0]);
     send_data(msg_buf, length);
-	delayMs(1000);
+	waitDoingServices(500,0,1);
 	length = sprintf(msg_buf,"AT+RESET");
 	send_data(msg_buf,length);
-	delayMs(2000);
+	waitDoingServices(5000,0,1);
     //uartDisable();
 }
 
@@ -769,7 +998,8 @@ int doCommand()
 		This acknowledgement lets us go to sleep immediately.  Packet length is 2 bytes.
 		0x02, 0xF0
 	*/
-	if(command_buff.commandBuffer[0] == 0x02 && command_buff.commandBuffer[1] == 0xF0) {
+	// if do_sleep is set already, don't process it
+	if(command_buff.commandBuffer[0] == 0x02 && command_buff.commandBuffer[1] == 0xF0 && !do_sleep) {
 		do_sleep = 1;
 		return(0);
 	}
@@ -838,9 +1068,11 @@ int controlProtocolService()
 // if bWithProtocol is true, also check for commands on both USB and UART
 int doServices(uint8 bWithProtocol)
 {
+	dex_tx_id_set = (dex_tx_id != 0);
 	boardService();
 	updateLeds();
 	usbComService();
+	bleConnectMonitor();
 	if(bWithProtocol)
 		return controlProtocolService();
 	return 1;
@@ -987,7 +1219,7 @@ int get_packet(Dexcom_packet* pPkt)
 	for(nChannel = start_channel; nChannel < NUM_CHANNELS; nChannel++)
 	{
 		now = getMs();
-		delay = 50 - (now - last_cycle_time);
+		delay = 50; // - (now - last_cycle_time);
 		// We only sit on each channel for 50ms.  This is long enough to get a packet (4ms)
 		// but not so long as prevent doServices() to process the USB port.
 		switch(WaitForPacket(delay, pPkt, nChannel))
@@ -995,6 +1227,7 @@ int get_packet(Dexcom_packet* pPkt)
 			case 1:			
 				// got a packet that passed CRC
 					pkt_time = getMs();
+					//packet_captured = 1;
 					return 1;
 			case 0:
 			// timed out
@@ -1020,27 +1253,29 @@ void LineStateChangeCallback(uint8 state)
 
 //extern void basicUsbInit();
 
-
 void main()
 {   
 	uint16 rpt_pkt=0;
 	systemInit();
-	//configure the P1_2 and P1_3 IO pins
-	makeAllOutputs(LOW);
-	//setDigitalInput(13,PULLED);
-	//initialise Anlogue Input 0
-	P0INP = 0x1;
 	//initialise the USB port
 	usbInit();
 	//initialise the dma channel for working with flash.
 	dma_Init();
+	//initialise sleep library
+	sleepInit();
+	// implement the USB line State Changed callback function.  
 	usbComRequestLineStateChangeNotification(LineStateChangeCallback);
 	// Open the UART and set it up for comms to HM-10
 	openUart();
+	//configure the P1_2 and P1_3 IO pins
+	//makeAllOutputs(LOW);
+	//setDigitalInput(13,PULLED);
+	//initialise Anlogue Input 0
+	P0INP = 0x1;
 	//turn on HM-1x using P1_0
 	setDigitalOutput(10,HIGH);
-	//wait 4 seconds, just in case it needs to settle.
-	delayMs(4000);
+	//wait 1 seconds, just in case it needs to settle.
+	waitDoingServices(1000,0,0);
 	//configure the bluetooth module
 	configBt();
 
@@ -1055,71 +1290,93 @@ void main()
 	// we haven't sent a beacon packet yet, so say so.
 	sent_beacon = 0;
 	LED_GREEN(1);
-	
+	// read the flash stored value of our TXID.
+	// we do this by reading the address we are interested in directly, cast as a pointer to the 
+	// correct data type.
+	dex_tx_id = *(uint32 XDATA *)FLASH_TX_ID;
+	if(dex_tx_id >= 0xFFFFFFFF) dex_tx_id = 0;
+	// store the time we woke up.
+	wake_time = getMs();
+	// if dex_tx_id is zero, we do not have an ID to filter on.  So, we keep sending a beacon every 5 seconds until it is set.
+	// Comment out this while loop if you wish to use promiscuous mode and receive all Dexcom tx packets from any source (inadvisable).
+	// Promiscuous mode is allowed in waitForPacket() function (dex_tx_id == 0, will match any dexcom packet).  Just don't send the 
+	// wixel a TXID packet.
+	while(dex_tx_id == 0) {
+		// wait until we have a BLE connection
+		while(!ble_connected) doServices(1);
+		//send a beacon packet
+		sendBeacon();
+		//wait 5 seconds
+		waitDoingServices(5000, dex_tx_id_set, 1);
+	}
+	sent_beacon=1;
+	// MAIN LOOP
 	while (1)
 	{
+		//clear the Pkt store.
 		Dexcom_packet Pkt;
 		memset(&Pkt, 0, sizeof(Dexcom_packet));
-		// read the flash stored value of our TXID.
-		// we do this by reading the address we are interested in directly, cast as a pointer to the 
-		// correct data type.
-		dex_tx_id = *(uint32 XDATA *)FLASH_TX_ID;
-		if(dex_tx_id >= 0xFFFFFFFF) dex_tx_id = 0;
+		//make sure HM01x is powered on.  We wait until it is.
+		//while (!P1_0);
+
 		//send our current dex_tx_id to the app, to let it know what we are looking for.  Only do this when we wake up (sent_beacon is false).
 		if(!sent_beacon) {
+//			printf("send beacon\r\n");
+			while (!ble_connected) {
+				setDigitalOutput(10,HIGH);
+//				printf("beacon waiting\r\n");
+				waitDoingServices(500, ble_connected,0);
+			}
 			// let HM-1x module settle for a second, and hopefully connect.
-			while((getMs() - dly_ms) <= 1000) {
-				doServices(1);
-			}	
-
 			sendBeacon();
 			sent_beacon = 1;
 		}
-		// if dex_tx_id is zero, we do not have an ID to filter on.  So, we keep sending a beacon every 5 seconds until it is set.
-		// Comment out this while loop if you wish to use promiscuous mode and receive all Dexcom tx packets from any source (inadvisable).
-		// Promiscuous mode is allowed in waitForPacket() function (dex_tx_id == 0, will match any dexcom packet).  Just don't send the 
-		// wixel a TXID packet.
-		dly_ms=getMs();
-		while(dex_tx_id == 0) {
-			// if 5 seconds are up, send a beacon.
-			if((getMs() - dly_ms) >= 5000){
-				LED_RED_TOGGLE();
-				sendBeacon();
-				dly_ms=getMs();
-			}
-			//process any wixel inputs
-			doServices(1);
-		}
 		LED_RED(0);
 		//continue to loop until we get a packet
-		if(!get_packet(&Pkt))
+		while(!get_packet(&Pkt))
 			continue;
 
 		// ok, we got a packet
-		print_packet(&Pkt);
+		//print_packet(&Pkt);
 		// when we send a packet, we wait until we get an ACK to put us to sleep.
-		dly_ms = getMs();
-		rpt_pkt = dly_ms;
 		while (!do_sleep){
-			doServices(1);
-			if ((getMs() - dly_ms) > 1000) {
+//			printf("got pkt\r\n");
+			while(!ble_connected) {
+//				printf("paket waiting\r\n");
+				setDigitalOutput(10,HIGH);
+				waitDoingServices(500, ble_connected,0);
+			}
+//			printf("send pkt\r\n");
+			// send the data packet
+			print_packet(&Pkt);
+			// if we have sent a number of packets and still have not got an ACK, time to sleep.  We keep trying for up to a minute.
+/*			if((getMs() - pkt_time) >= 60000) {
 				do_sleep = 1;
 				break;
 			}
-/*			if ((getMs() - rpt_pkt) > 5000) {
-				rpt_pkt = getMs();
-				print_packet(&Pkt);
-			}
-*/		}
+			*/	
+			// wait 5 seconds, listenting for the ACK.
+//			printf("waiting for ack\r\n");
+			waitDoingServices(5000, do_sleep, 1);
 			
-		// can't safely sleep if we didn't get a packet!
+			// if we got the ACK, get out of the loop.
+		}
+		//packet_captured = 0;
+			
+		// can't safely sleep if we didn't get an ACK, or if we are already sleeping!
 		if (do_sleep && !is_sleeping)
 		{
 			// not sure what this is about yet, but I believe it is saving state.
+			// save all Port Interrupts state (enabled/disabled).
 		    uint8 savedPICTL = PICTL;
+			// save port 0 Interrupt Enable state.  This is a BIT value and equates to IEN1.POIE.
+			// This is probably redundant now, as we do all IEN registers in goToSleep.
 			BIT savedP0IE = P0IE;
-			do_sleep = 0;
-
+			uint8 savedP0SEL = P0SEL;
+			uint8 savedP0DIR = P0DIR;
+			uint8 savedP1SEL = P1SEL;
+			uint8 savedP1DIR = P1DIR;
+			// turn of the RF Frequency Synthesiser.
 			RFST = 4;   //SIDLE
 			// turn all wixel LEDs on
 			//LED_RED(1);
@@ -1134,31 +1391,55 @@ void main()
 				if(writing_flash)
 					dly_ms=getMs();
 			}
+			// make sure the uart send buffer is empty.
+			while(uart1TxAvailable() < 255);
 			// turn the wixel LEDS off
 			LED_RED(0);
 			LED_YELLOW(0);
 			LED_GREEN(0);
+			// turn off the BLE module
+			setDigitalOutput(10,LOW);
 			// sleep for around 300s
+//			printf("sleeping\r\n");
+			radioMacSleep();
 			goToSleep(200);   //
+			radioMacResume();
+			// reset the UART
+			openUart();
+			//WDCTL=0x0B;
 			// still trying to find out what this is about, but I believe it is restoring state.
+			// restore all Port Interrupts we had prior to going to sleep. 
 			PICTL = savedPICTL;
+			// restore Port 0 Interrupt Enable state.  This is a BIT that equates to IEN1.P0IE.
+			// This is probably redundant now, as we already do this in ISR ST.
 			P0IE = savedP0IE;
+			P0SEL = savedP0SEL;
+			P0DIR = savedP0DIR;
+			P1SEL = savedP1SEL;
+			P1DIR = savedP1DIR;
 			// Enable suspend detection and disable any other weird features.
 			USBPOW = 1;
 			// Enable the USB common interrupts we care about: Reset, Resume, Suspend.
 			// Without this, we USBCIF.SUSPENDIF will not get set (the datasheet is incomplete).
 			USBCIE = 0b0111;
-
+//			printf("awake!\r\n");
 			// bootstrap radio again
-			radioMacInit();
+			//radioMacInit();
+			// tell the radio to remain IDLE when the next packet is recieved.
 			MCSM1 = 0;			// after RX go to idle, we don't transmit
+			// interrupt the radio, make it go IDLE
 			radioMacStrobe();
 			// watchdog mode??? this will do a reset?
 			//			WDCTL=0x0B;
 			// delayMs(50);    //wait for reset
+			// clear do_sleep, cause we have just woken up.
+			do_sleep = 0;
 			// clear sent_beacon so we send it next time we wake up.
 			sent_beacon = 0;
-
+			// power on the BLE module
+//			printf("ble on\r\n");
+			setDigitalOutput(10,HIGH);
+			setDigitalInput(12,PULLED);
 		}
 	}
 }

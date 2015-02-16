@@ -327,7 +327,9 @@ void dex_RadioSettings()
 
     // F0CFG and BSCFG configure details of the PID loop used to correct the
     // bit rate and frequency of the signal (RX only I believe).
-    LoadRFParam(&FOCCFG, 0x0A);		// allow range of +/1 FChan/4 = 375000/4 = 93750.  No CS GATE
+    //LoadRFParam(&FOCCFG, 0x0A);		// allow range of +/1 FChan/4 = 375000/4 = 93750.  No CS GATE
+	LoadRFParam(&FOCCFG, 0x2A);		// allow range of +/1 FChan/4 = 375000/4 = 93750.  With CS GATE
+	
     LoadRFParam(&BSCFG, 0x6C);
 
     // AGC Control:
@@ -746,7 +748,11 @@ void updateLeds()
 //		}
 	}
 
-	LED_YELLOW(ble_connected);
+	if(usb_connected) {
+		LED_YELLOW(ble_connected);
+	} else { 
+		LED_YELLOW(0);
+	}
 	//LED_YELLOW(1);
 	LED_RED(radioQueueRxCurrentPacket());
 //	LED_RED(0);
@@ -1075,6 +1081,10 @@ int doServices(uint8 bWithProtocol)
 	bleConnectMonitor();
 	if(bWithProtocol)
 		return controlProtocolService();
+	if(!sent_beacon && ble_connected) {
+		sendBeacon();
+		sent_beacon = 1;
+	}
 	return 1;
 }
 
@@ -1219,7 +1229,8 @@ int get_packet(Dexcom_packet* pPkt)
 	for(nChannel = start_channel; nChannel < NUM_CHANNELS; nChannel++)
 	{
 		now = getMs();
-		delay = 50; // - (now - last_cycle_time);
+		//delay = 50; // - (now - last_cycle_time);
+		delay = 50 - (now - last_cycle_time);
 		// We only sit on each channel for 50ms.  This is long enough to get a packet (4ms)
 		// but not so long as prevent doServices() to process the USB port.
 		switch(WaitForPacket(delay, pPkt, nChannel))
@@ -1320,7 +1331,7 @@ void main()
 		//while (!P1_0);
 
 		//send our current dex_tx_id to the app, to let it know what we are looking for.  Only do this when we wake up (sent_beacon is false).
-		if(!sent_beacon) {
+/*		if(!sent_beacon) {
 //			printf("send beacon\r\n");
 			while (!ble_connected) {
 				setDigitalOutput(10,HIGH);
@@ -1331,7 +1342,7 @@ void main()
 			sendBeacon();
 			sent_beacon = 1;
 		}
-		LED_RED(0);
+*/		LED_RED(0);
 		//continue to loop until we get a packet
 		while(!get_packet(&Pkt))
 			continue;
@@ -1357,9 +1368,11 @@ void main()
 			*/	
 			// wait 5 seconds, listenting for the ACK.
 //			printf("waiting for ack\r\n");
-			waitDoingServices(5000, do_sleep, 1);
+			waitDoingServices(5000, 0, 1);
 			
 			// if we got the ACK, get out of the loop.
+			if(do_sleep) 
+				break;
 		}
 		//packet_captured = 0;
 			
@@ -1443,5 +1456,3 @@ void main()
 		}
 	}
 }
-
-

@@ -821,28 +821,33 @@ void send_data( uint8 *msg, uint8 len)
 	{
 		uart1TxSendByte(msg[i]);
 	}
-	while(uart1TxAvailable()<255) doServices(1);
+	while(uart1TxAvailable()<255) waitDoingServices(20,0,1);
 	if(usb_connected) {
 		while(usbComTxAvailable() < len) {};
 		for(i=0; i < len; i++)
 		{
 			usbComTxSendByte(msg[i]);
 		}
-		while(usbComTxAvailable()<128) doServices(1);
+		while(usbComTxAvailable()<128) waitDoingServices(20,0,1);
 	}
 }
 
 // function called by doServices to monitor the state of the BLE connection
 void bleConnectMonitor() {
+	//to store the time we went high
 	static uint32 timer;
+	//to store P1_2 the last time we looked.
 	static BIT last_check;
+	// if P1_2 is high, ple_connected is low, and the last_check was low, sav the time and set last_check.
 	if (P1_2 && !ble_connected && !last_check) {
 		timer=getMs();
 		last_check = 1;
+	// otherwise if P1_2 goes low, and ble_connected is high, we cancel everything.
 	} else if (!P1_2 && ble_connected) {
 		last_check = 0;
 		ble_connected = 0;
-	} else if (P1_2 && last_check && ((getMs() - timer)>500)) {
+	//otherwise, if P1_2 has been high for more than 550ms, we can savely assume we have ble_connected, so say so.
+	} else if (P1_2 && last_check && ((getMs() - timer)>550)) {
 		ble_connected = 1;
 	}
 }
@@ -1081,9 +1086,11 @@ int doServices(uint8 bWithProtocol)
 	bleConnectMonitor();
 	if(bWithProtocol)
 		return controlProtocolService();
-	if(!sent_beacon && ble_connected) {
-		sendBeacon();
-		sent_beacon = 1;
+	if(!sent_beacon) {
+		if(ble_connected) {
+			sendBeacon();
+			sent_beacon = 1;
+		}
 	}
 	return 1;
 }
@@ -1318,7 +1325,7 @@ void main()
 		//send a beacon packet
 		sendBeacon();
 		//wait 5 seconds
-		waitDoingServices(5000, dex_tx_id_set, 1);
+		waitDoingServices(10000, dex_tx_id_set, 1);
 	}
 	sent_beacon=1;
 	// MAIN LOOP
@@ -1371,8 +1378,6 @@ void main()
 			waitDoingServices(5000, 0, 1);
 			
 			// if we got the ACK, get out of the loop.
-			if(do_sleep) 
-				break;
 		}
 		//packet_captured = 0;
 			

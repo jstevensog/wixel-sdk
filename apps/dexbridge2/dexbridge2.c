@@ -540,25 +540,25 @@ void goToSleep (uint16 seconds) {
 	mode is entered, thus interrupts are enabled during power modes.
 	All interrupts not to be used to wake up from power modes must
 	be disabled before setting SLEEP.MODE!=00.*/
-	diff = seconds;
+//	diff = seconds;
 	//printf("\r\ndiff: %lu\r\n", diff);
-	diff = diff * 1000;
+//	diff = diff * 1000;
 	//printf("\r\ndiff * 1000: %lu\r\n", diff);
-	diff = diff - (getMs() - pkt_time);
+//	diff = diff - (getMs() - pkt_time);
 	//printf("\r\ndiff - getMs-pkt_time: %lu\r\n", diff);
-	diff = diff/1000;
+//	diff = diff/1000;
 	//printf("\r\ndiff/1000: %lu\r\n", diff);
-	sleep_time = (unsigned short)diff;
+//	sleep_time = (unsigned short)diff;
 	//sleep_time = seconds;
 //	printf("\r\nseconds: %u, sleep_time: %u, now-pkt_time: %lu\r\n", seconds, sleep_time, (getMs()-pkt_time));
 	while(usb_connected && (usbComTxAvailable() < 128)) {
 		usbComService();
 	}
-	if(sleep_time <= 0 || sleep_time > seconds) {
-		do_sleep = 0;
-		pkt_time = 0;
-		return;
-	}
+//	if(sleep_time <= 0 || sleep_time > seconds) {
+//		do_sleep = 0;
+//		pkt_time = 0;
+//		return;
+//	}
 	is_sleeping = 1;
 
 	if(!usb_connected)
@@ -613,6 +613,15 @@ void goToSleep (uint16 seconds) {
 		IEN1 &= ~0x3F;
 		IEN2 &= ~0x3F;
 		
+		diff = seconds;
+		//printf("\r\ndiff: %lu\r\n", diff);
+		diff = diff * 1000;
+		//printf("\r\ndiff * 1000: %lu\r\n", diff);
+		diff = diff - (getMs() - pkt_time);
+		//printf("\r\ndiff - getMs-pkt_time: %lu\r\n", diff);
+		diff = diff/1000;
+		//printf("\r\ndiff/1000: %lu\r\n", diff);
+		sleep_time = (unsigned short)diff;
 		WORCTRL |= 0x04; // Reset Sleep Timer
 		temp = WORTIME0;
 		while(temp == WORTIME0); // Wait until a positive 32 kHz edge
@@ -658,6 +667,15 @@ void goToSleep (uint16 seconds) {
 		while(temp == WORTIME0); // Wait until a positive 32 kHz edge
 		temp = WORTIME0;
 		while(temp == WORTIME0); // Wait until a positive 32 kHz edge
+		diff = seconds;
+		//printf("\r\ndiff: %lu\r\n", diff);
+		diff = diff * 1000;
+		//printf("\r\ndiff * 1000: %lu\r\n", diff);
+		diff = diff - (getMs() - pkt_time);
+		//printf("\r\ndiff - getMs-pkt_time: %lu\r\n", diff);
+		diff = diff/1000;
+		//printf("\r\ndiff/1000: %lu\r\n", diff);
+		sleep_time = (unsigned short)diff;
 		WOREVT1 = sleep_time >> 8; // Set EVENT0, high byte
 		WOREVT0 = sleep_time; // Set EVENT0, low byte
 
@@ -1357,6 +1375,7 @@ void main()
 		// ok, we got a packet
 		//print_packet(&Pkt);
 		// when we send a packet, we wait until we get an ACK to put us to sleep.
+		// we only wait a maximum of two minutes
 		while (!do_sleep){
 //			printf("got pkt\r\n");
 			while(!ble_connected) {
@@ -1367,17 +1386,14 @@ void main()
 //			printf("send pkt\r\n");
 			// send the data packet
 			print_packet(&Pkt);
-			// if we have sent a number of packets and still have not got an ACK, time to sleep.  We keep trying for up to a minute.
-/*			if((getMs() - pkt_time) >= 60000) {
-				do_sleep = 1;
-				break;
-			}
-			*/	
-			// wait 5 seconds, listenting for the ACK.
+			// wait 10 seconds, listenting for the ACK.
 //			printf("waiting for ack\r\n");
-			waitDoingServices(5000, 0, 1);
+			waitDoingServices(10000, 0, 1);
 			
 			// if we got the ACK, get out of the loop.
+			// if we have sent a number of packets and still have not got an ACK, time to sleep.  We keep trying for up to 2 minutes.
+			if((getMs() - pkt_time) >= 120000)
+				do_sleep = 1;
 		}
 		//packet_captured = 0;
 			

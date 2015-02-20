@@ -114,7 +114,7 @@ static volatile BIT ble_connected;		// bit indicating the BLE module is connecte
 static volatile int start_channel = 0;	// the radio channel we will start looking for packets on.
 static volatile uint32 dly_ms = 0;
 static volatile uint32 pkt_time = 0;
-static volatile uint32 wake_time = 0;
+//static volatile uint32 wake_time = 0;
 static uint8 sleep_mode = 0;
 static uint8 save_IEN0;
 static uint8 save_IEN1;
@@ -501,12 +501,26 @@ ISR (ST, 0)
 }
 */
 
+uint32 calcSleep(uint16 seconds) {
+	uint32 diff = 0;
+	uint32 now = 0;
+	diff = seconds;
+	//printf("\r\ndiff: %lu\r\n", diff);
+	diff = diff * 1000;
+	//printf("\r\ndiff * 1000: %lu\r\n", diff);
+	diff = diff - (getMs() - pkt_time);
+	//printf("\r\ndiff - getMs-pkt_time: %lu\r\n", diff);
+	diff = diff/1000;
+	//printf("\r\ndiff/1000: %lu\r\n", diff);
+	return diff;
+}
+
 void goToSleep (uint16 seconds) {
     unsigned char temp;
 	//uint16 sleep_time = 0;
 	unsigned short sleep_time =0;
-	uint32 diff = 0;
-	uint32 now = 0;
+	//uint32 diff = 0;
+	//uint32 now = 0;
 	//initialise sleep library
 	sleepInit();
 
@@ -613,7 +627,7 @@ void goToSleep (uint16 seconds) {
 		IEN1 &= ~0x3F;
 		IEN2 &= ~0x3F;
 		
-		diff = seconds;
+/*		diff = seconds;
 		//printf("\r\ndiff: %lu\r\n", diff);
 		diff = diff * 1000;
 		//printf("\r\ndiff * 1000: %lu\r\n", diff);
@@ -622,6 +636,8 @@ void goToSleep (uint16 seconds) {
 		diff = diff/1000;
 		//printf("\r\ndiff/1000: %lu\r\n", diff);
 		sleep_time = (unsigned short)diff;
+*/		
+		sleep_time = (unsigned short)calcSleep(seconds);
 		WORCTRL |= 0x04; // Reset Sleep Timer
 		temp = WORTIME0;
 		while(temp == WORTIME0); // Wait until a positive 32 kHz edge
@@ -667,7 +683,7 @@ void goToSleep (uint16 seconds) {
 		while(temp == WORTIME0); // Wait until a positive 32 kHz edge
 		temp = WORTIME0;
 		while(temp == WORTIME0); // Wait until a positive 32 kHz edge
-		diff = seconds;
+/*		diff = seconds;
 		//printf("\r\ndiff: %lu\r\n", diff);
 		diff = diff * 1000;
 		//printf("\r\ndiff * 1000: %lu\r\n", diff);
@@ -676,6 +692,8 @@ void goToSleep (uint16 seconds) {
 		diff = diff/1000;
 		//printf("\r\ndiff/1000: %lu\r\n", diff);
 		sleep_time = (unsigned short)diff;
+*/
+		sleep_time = (unsigned short)calcSleep(seconds);
 		WOREVT1 = sleep_time >> 8; // Set EVENT0, high byte
 		WOREVT0 = sleep_time; // Set EVENT0, low byte
 
@@ -1104,12 +1122,13 @@ int doServices(uint8 bWithProtocol)
 	bleConnectMonitor();
 	if(bWithProtocol)
 		return controlProtocolService();
-	if(!sent_beacon) {
+/*	if(!sent_beacon) {
 		if(ble_connected) {
 			sendBeacon();
 			sent_beacon = 1;
 		}
 	}
+*/
 	return 1;
 }
 
@@ -1292,6 +1311,7 @@ void LineStateChangeCallback(uint8 state)
 void main()
 {   
 	uint16 rpt_pkt=0;
+	uint32 lasttry = 0;
 	systemInit();
 	//initialise the USB port
 	usbInit();
@@ -1332,7 +1352,7 @@ void main()
 	dex_tx_id = *(uint32 XDATA *)FLASH_TX_ID;
 	if(dex_tx_id >= 0xFFFFFFFF) dex_tx_id = 0;
 	// store the time we woke up.
-	wake_time = getMs();
+	//wake_time = getMs();
 	// if dex_tx_id is zero, we do not have an ID to filter on.  So, we keep sending a beacon every 5 seconds until it is set.
 	// Comment out this while loop if you wish to use promiscuous mode and receive all Dexcom tx packets from any source (inadvisable).
 	// Promiscuous mode is allowed in waitForPacket() function (dex_tx_id == 0, will match any dexcom packet).  Just don't send the 
@@ -1346,32 +1366,25 @@ void main()
 		waitDoingServices(10000, dex_tx_id_set, 1);
 	}
 	sent_beacon=1;
+	lasttry = getMs();
 	// MAIN LOOP
 	while (1)
 	{
-		//clear the Pkt store.
 		Dexcom_packet Pkt;
+		if(ble_connected && !sent_beacon && ((getMs()-lasttry)>10000)) {
+			sendBeacon();
+			lasttry=getMs();
+		}
+		//clear the Pkt store.
 		memset(&Pkt, 0, sizeof(Dexcom_packet));
 		//make sure HM01x is powered on.  We wait until it is.
 		//while (!P1_0);
 
 		//send our current dex_tx_id to the app, to let it know what we are looking for.  Only do this when we wake up (sent_beacon is false).
-/*		if(!sent_beacon) {
-//			printf("send beacon\r\n");
-			while (!ble_connected) {
-				setDigitalOutput(10,HIGH);
-//				printf("beacon waiting\r\n");
-				waitDoingServices(500, ble_connected,0);
-			}
-			// let HM-1x module settle for a second, and hopefully connect.
-			sendBeacon();
-			sent_beacon = 1;
-		}
-*/		LED_RED(0);
+		LED_RED(0);
 		//continue to loop until we get a packet
-		while(!get_packet(&Pkt))
+		while(!get_packet(&Pkt)) 
 			continue;
-
 		// ok, we got a packet
 		//print_packet(&Pkt);
 		// when we send a packet, we wait until we get an ACK to put us to sleep.
@@ -1457,6 +1470,8 @@ void main()
 			// Without this, we USBCIF.SUSPENDIF will not get set (the datasheet is incomplete).
 			USBCIE = 0b0111;
 //			printf("awake!\r\n");
+			//reset the radio registers
+			setRadioRegistersInitFunc(dex_RadioSettings);
 			// bootstrap radio again
 			//radioMacInit();
 			// tell the radio to remain IDLE when the next packet is recieved.

@@ -337,8 +337,9 @@ void dex_RadioSettings()
     //    Carrier Sense Absolute Threshold (Sec 13.10.5).
     //    Carrier Sense Relative Threshold (Sec 13.10.6).
     LoadRFParam(&AGCCTRL2, 0x44);
-    LoadRFParam(&AGCCTRL1, 0x00);
-    LoadRFParam(&AGCCTRL0, 0xB2);
+    //LoadRFParam(&AGCCTRL1, 0x00);
+    LoadRFParam(&AGCCTRL1, 0x80);	//enable relative Carrier Sense of 6db change
+	LoadRFParam(&AGCCTRL0, 0xB2);
 
     // Frequency Synthesizer registers that are not fully documented.
     LoadRFParam(&FSCAL3, 0xA9); 
@@ -356,7 +357,7 @@ void dex_RadioSettings()
     LoadRFParam(&PKTCTRL1, 0x04); 
     LoadRFParam(&PKTCTRL0, 0x05);		// enable CRC flagging and variable length packets.  Probably could use fix length for our case, since all are same length.
 										// but that would require changing the library code, since it sets up buffers etc etc, and I'm too lazy.
-	LoadRFParam(&PKTLEN, 0x12);			// limit packet length to 17 bytes, which should be the length of the Dexcom packet.
+	LoadRFParam(&PKTLEN, 0x12);			// limit packet length to 18 bytes, which should be the length of the Dexcom packet.
 	
 	//RF_Params[49] = 1;
 }
@@ -1296,8 +1297,8 @@ void main()
 			waitDoingServices(10000, 0, 1);
 			
 			// if we got the ACK, get out of the loop.
-			// if we have sent a number of packets and still have not got an ACK, time to sleep.  We keep trying for up to 2 minutes.
-			if((getMs() - pkt_time) >= 120000)
+			// if we have sent a number of packets and still have not got an ACK, time to sleep.  We keep trying for up to 3 minutes.
+			if((getMs() - pkt_time) >= 180000)
 				do_sleep = 1;
 		}
 		//packet_captured = 0;
@@ -1343,7 +1344,7 @@ void main()
 			// sleep for around 300s
 //			printf("sleeping\r\n");
 			radioMacSleep();
-			goToSleep(200);   //
+			goToSleep(275);   //
 			radioMacResume();
 			// reset the UART
 			openUart();

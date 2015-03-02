@@ -91,6 +91,8 @@ elsewhere.  This small bridge rig should be kept nearby the T1D at all times.
 #define SLEEP_MODE_USING (0x02)
 //define the FLASH_TX_ID address.  This is the address we store the Dexcom TX ID number in.
 #define FLASH_TX_ID		(0x77F8)
+//define the DEXBRIDGE_FLAGS address.  This is the address we store the Dexbridge flags in.
+#define DEXBRIDGE_FLAGS	(0x77F6)
 //define the maximum command string length for USB commands.
 #define USB_COMMAND_MAXLEN	(32)
 //defines the number of channels we will scan.
@@ -98,7 +100,7 @@ elsewhere.  This small bridge rig should be kept nearby the T1D at all times.
 //defines battery minimum and maximum voltage values for converting to percentage.
 // assuming that there is a 10M ohm resistor between VIN and P0_0, and a 1M ohm resistor between P0_0 and GND.
 #define BATTERY_MAXIMUM		(1766)
-#define BATTERY_MINIMUM		(1239)
+#define BATTERY_MINIMUM		(1424)
 // defines the Dexbridge protocol functional level.  Sent in each packet as the last byte.
 #define DEXBRIDGE_PROTO_LEVEL (0x01)
 
@@ -122,6 +124,9 @@ static uint8 save_IEN2;
 
 // Dexcom Transmitter Source Address to match against.
 XDATA uint32 dex_tx_id; 
+// Dexbridge flags.  Currently only the following flags are used:
+//	0	-	BLE name initialised. 1= not initialised, 0= initialised.
+XDATA uint8  dexbridge_flags;
 
 // message  buffer for communicating with the BLE module
 XDATA uint8 msg_buf[82];
@@ -338,7 +343,7 @@ void dex_RadioSettings()
     //    Carrier Sense Relative Threshold (Sec 13.10.6).
     LoadRFParam(&AGCCTRL2, 0x44);
     //LoadRFParam(&AGCCTRL1, 0x00);
-    LoadRFParam(&AGCCTRL1, 0x80);	//enable relative Carrier Sense of 6db change
+    LoadRFParam(&AGCCTRL1, 0x50);	//enable relative Carrier Sense of 6db change
 	LoadRFParam(&AGCCTRL0, 0xB2);
 
     // Frequency Synthesizer registers that are not fully documented.
@@ -1223,19 +1228,33 @@ void main()
 	//setDigitalInput(13,PULLED);
 	//initialise Anlogue Input 0
 	P0INP = 0x1;
+	dexbridge_flags = *(uint8 XDATA *)DEXBRIDGE_FLAGS;
+	//initialise the command buffer
+	init_command_buff(&command_buff);
+	
 	//turn on HM-1x using P1_0
 	setDigitalOutput(10,HIGH);
 	//wait 1 seconds, just in case it needs to settle.
 	waitDoingServices(1000,0,0);
 	//configure the bluetooth module
-	configBt();
-
-	init_command_buff(&command_buff);
+	//if we haven't written a 0 into the appropriate flag...
+	if((dexbridge_flags & 0x01) == 1) { 
+		//configure the BT module
+		configBt();
+		// set the flag to 0
+		dexbridge_flags &= 0xF1;
+		//set up the value for writing to flash
+		writeBuffer = dexbridge_flags;
+		//write to flash
+		//writeToFlash(DEXBR_FLAGS, sizeof(dexbr_flags));
+		writeToFlash(DEXBRIDGE_FLAGS, sizeof(dexbridge_flags));
+	}
 	
+	// initialise the Radio Regisers
 	setRadioRegistersInitFunc(dex_RadioSettings);
-
+	//initialise the radio queue and allow CRC errors.
 	radioQueueInit();
-    radioQueueAllowCrcErrors = 1;
+    //radioQueueAllowCrcErrors = 1;
 	// these are reset in radioQueueInit and radioMacInit after our init func was already called
 	MCSM1 = 0;			// after RX go to idle, we don't transmit
 	// we haven't sent a beacon packet yet, so say so.
@@ -1282,6 +1301,7 @@ void main()
 		//print_packet(&Pkt);
 		// when we send a packet, we wait until we get an ACK to put us to sleep.
 		// we only wait a maximum of two minutes
+		LED_RED(0);
 		while (!do_sleep){
 //			printf("got pkt\r\n");
 			while(!ble_connected) {

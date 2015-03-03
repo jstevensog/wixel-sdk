@@ -43,4 +43,5 @@ apps/*/*.20*
 #Allow
 !libraries/xpage/*
 !/apps/dexbridge2/dexbridge2.wxl
+!/apps/usb_serial/usb_serial.wxl
 

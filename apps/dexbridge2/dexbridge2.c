@@ -1287,13 +1287,12 @@ void main()
 		//send our current dex_tx_id to the app, to let it know what we are looking for.  Only do this when we wake up (sent_beacon is false).
 		if(ble_connected && !sent_beacon) {
 			sendBeacon();
+			sent_beacon = 1;
 		}
+		LED_RED(0);
 		//clear the Pkt store.
 		memset(&Pkt, 0, sizeof(Dexcom_packet));
-		//make sure HM01x is powered on.  We wait until it is.
-		//while (!P1_0);
 
-		LED_RED(0);
 		//continue to loop until we get a packet
 		if(!get_packet(&Pkt)) 
 			continue;

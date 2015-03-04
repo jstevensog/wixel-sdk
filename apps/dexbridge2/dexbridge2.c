@@ -98,9 +98,9 @@ elsewhere.  This small bridge rig should be kept nearby the T1D at all times.
 //defines the number of channels we will scan.
 #define NUM_CHANNELS		(4)
 //defines battery minimum and maximum voltage values for converting to percentage.
-// assuming that there is a 10M ohm resistor between VIN and P0_0, and a 1M ohm resistor between P0_0 and GND.
-#define BATTERY_MAXIMUM		(1766)
-#define BATTERY_MINIMUM		(1424)
+// assuming that there is a 2k7 ohm resistor between VIN and P0_0, and a 10k ohm resistor between P0_0 and GND.
+#define BATTERY_MAXIMUM		(1771)
+#define BATTERY_MINIMUM		(1416)
 // defines the Dexbridge protocol functional level.  Sent in each packet as the last byte.
 #define DEXBRIDGE_PROTO_LEVEL (0x01)
 
@@ -819,6 +819,9 @@ void configBt() {
 */	length = sprintf(msg_buf, "AT+NAMEDexbridge%02x", serialNumber[1], serialNumber[0]);
     send_data(msg_buf, length);
 	waitDoingServices(500,0,1);
+	length = sprintf(msg_buf, "AT+RELI1");
+    send_data(msg_buf, length);
+	waitDoingServices(500,0,1);	
 	length = sprintf(msg_buf,"AT+RESET");
 	send_data(msg_buf,length);
 	waitDoingServices(5000,0,1);
@@ -1363,7 +1366,7 @@ void main()
 			// sleep for around 300s
 //			printf("sleeping\r\n");
 			radioMacSleep();
-			goToSleep(275);   //
+			goToSleep(250);   //
 			radioMacResume();
 			// reset the UART
 			openUart();

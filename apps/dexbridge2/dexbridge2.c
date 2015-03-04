@@ -1366,7 +1366,7 @@ void main()
 			// sleep for around 300s
 //			printf("sleeping\r\n");
 			radioMacSleep();
-			goToSleep(250);   //
+			goToSleep(275);   //
 			radioMacResume();
 			// reset the UART
 			openUart();

@@ -126,7 +126,7 @@ static uint8 save_IEN2;
 XDATA uint32 dex_tx_id; 
 // Dexbridge flags.  Currently only the following flags are used:
 //	0	-	BLE name initialised. 1= not initialised, 0= initialised.
-XDATA uint8  dexbridge_flags;
+XDATA uint16  dexbridge_flags;
 
 // message  buffer for communicating with the BLE module
 XDATA uint8 msg_buf[82];
@@ -153,7 +153,7 @@ static uint8 nChannels[NUM_CHANNELS] = { 0, 100, 199, 209 };
 
 
 // writeBuffer holds the data from the computer that we want to write in to flash.
-XDATA uint32 writeBuffer;
+XDATA uint8 writeBuffer[6];
 
 // flashWriteDmaConfig holds the configuration of DMA channel 0, which we use to
 // transfer the data from writeBuffer in to flash.
@@ -231,7 +231,6 @@ Uses:	The DMA channel initialised previously.
 */
 void writeToFlash(uint16 address, uint16 length)
 {
-	// first erase the page
 	FADDR = address >> 1;	// not sure if i need to do this again.
 	flashWriteDmaConfig.VLEN_LENH = length >> 8;
 	flashWriteDmaConfig.LENL = length;
@@ -698,7 +697,7 @@ void updateLeds()
 		LED_YELLOW(0);
 	}
 	//LED_YELLOW(1);
-	LED_RED(radioQueueRxCurrentPacket());
+	//LED_RED(radioQueueRxCurrentPacket());
 //	LED_RED(0);
 }
 
@@ -939,17 +938,28 @@ int doCommand()
 	*/
 	if(command_buff.commandBuffer[1] == 0x01 && command_buff.commandBuffer[0] == 0x06)
 	{
+		//uint32 tmp_id;
+		//set dex_tx_id to the new value
+		//dex_tx_id = tmp_id;
 		//we are being given a TX ID 32 bit integer (already encoded)
+		//memcpy(&dex_tx_id, &command_buff.commandBuffer[2],sizeof(dex_tx_id));
 		//indicate we are writing to flash to stop any sleeping etc.
 		writing_flash=1;
 		memcpy(&dex_tx_id, &command_buff.commandBuffer[2],sizeof(dex_tx_id));
 		//copy dex_tx_id into the writeBuffer so we can write it to flash
-		writeBuffer=dex_tx_id;
+		//writeBuffer=dex_tx_id;
+		memcpy(&writeBuffer, &dexbridge_flags, sizeof(dexbridge_flags));
+		memcpy(&writeBuffer+2, &dex_tx_id, sizeof(dex_tx_id));
 		eraseFlash(FLASH_TX_ID);
-		writeToFlash(FLASH_TX_ID, sizeof(dex_tx_id));
-		// send back the TXID we think we got in response
-		sendBeacon();
+		//writeToFlash(FLASH_TX_ID, sizeof(dex_tx_id));
+		//set up the value for writing to flash
+		//writeBuffer = dexbridge_flags;
+		//write to flash
+		writeToFlash(DEXBRIDGE_FLAGS, sizeof(dexbridge_flags)+sizeof(dex_tx_id));
 		writing_flash=0;
+		// send back the TXID we think we got in response
+		printf("dex_tx_id: %lu, FLASH_TX_ID: %lu\r\n", dex_tx_id, *(uint32 XDATA *)FLASH_TX_ID); 
+		sendBeacon();
 		return 0;
 	}
 	/* command 0xF0 is an acknowledgement sent by the controlling device of a data packet.
@@ -1241,15 +1251,14 @@ void main()
 	waitDoingServices(1000,0,0);
 	//configure the bluetooth module
 	//if we haven't written a 0 into the appropriate flag...
-	if((dexbridge_flags & 0x01) == 1) { 
+	if((dexbridge_flags & 0x0001) == 1) { 
 		//configure the BT module
 		configBt();
 		// set the flag to 0
-		dexbridge_flags &= 0xF1;
+		dexbridge_flags &= 0xFFFE;
 		//set up the value for writing to flash
-		writeBuffer = dexbridge_flags;
+		memcpy(&writeBuffer, &dexbridge_flags, sizeof(dexbridge_flags));
 		//write to flash
-		//writeToFlash(DEXBR_FLAGS, sizeof(dexbr_flags));
 		writeToFlash(DEXBRIDGE_FLAGS, sizeof(dexbridge_flags));
 	}
 	
@@ -1268,6 +1277,7 @@ void main()
 	// correct data type.
 	dex_tx_id = *(uint32 XDATA *)FLASH_TX_ID;
 	if(dex_tx_id >= 0xFFFFFFFF) dex_tx_id = 0;
+	dex_tx_id = 0;
 	// store the time we woke up.
 	//wake_time = getMs();
 	// if dex_tx_id is zero, we do not have an ID to filter on.  So, we keep sending a beacon every 5 seconds until it is set.
@@ -1282,12 +1292,14 @@ void main()
 		//wait 5 seconds
 		waitDoingServices(10000, dex_tx_id_set, 1);
 	}
-	sent_beacon = 1;
+//	sent_beacon = 1;
 	// MAIN LOOP
 	while (1)
 	{
 		Dexcom_packet Pkt;
+		//dex_tx_id = *(uint32 XDATA *)FLASH_TX_ID;
 		//send our current dex_tx_id to the app, to let it know what we are looking for.  Only do this when we wake up (sent_beacon is false).
+		printf("ble_connected: %u, sent_beacon: %u\r\n", ble_connected, sent_beacon);
 		if(ble_connected && !sent_beacon) {
 			sendBeacon();
 			sent_beacon = 1;
@@ -1297,25 +1309,27 @@ void main()
 		memset(&Pkt, 0, sizeof(Dexcom_packet));
 
 		//continue to loop until we get a packet
-		if(!get_packet(&Pkt)) 
+		printf("looking for %lu\r\n", dex_tx_id);
+		if(!get_packet(&Pkt)) {
 			continue;
+		}
 		// ok, we got a packet
 		//print_packet(&Pkt);
 		// when we send a packet, we wait until we get an ACK to put us to sleep.
 		// we only wait a maximum of two minutes
 		LED_RED(0);
+		printf("got pkt\r\n");
 		while (!do_sleep){
-//			printf("got pkt\r\n");
 			while(!ble_connected) {
 //				printf("paket waiting\r\n");
 				setDigitalOutput(10,HIGH);
 				waitDoingServices(500, ble_connected,0);
 			}
-//			printf("send pkt\r\n");
+			printf("send pkt\r\n");
 			// send the data packet
 			print_packet(&Pkt);
 			// wait 10 seconds, listenting for the ACK.
-//			printf("waiting for ack\r\n");
+			printf("waiting for ack\r\n");
 			waitDoingServices(10000, 0, 1);
 			
 			// if we got the ACK, get out of the loop.
@@ -1338,6 +1352,7 @@ void main()
 			uint8 savedP0DIR = P0DIR;
 			uint8 savedP1SEL = P1SEL;
 			uint8 savedP1DIR = P1DIR;
+			printf("going to sleep\r\n");
 			// clear sent_beacon so we send it next time we wake up.
 			sent_beacon = 0;
 			// turn of the RF Frequency Synthesiser.
@@ -1364,7 +1379,7 @@ void main()
 			// turn off the BLE module
 			setDigitalOutput(10,LOW);
 			// sleep for around 300s
-//			printf("sleeping\r\n");
+			printf("sleeping\r\n");
 			radioMacSleep();
 			goToSleep(240);   //
 			radioMacResume();
@@ -1383,10 +1398,9 @@ void main()
 			P1DIR = savedP1DIR;
 			// Enable suspend detection and disable any other weird features.
 			USBPOW = 1;
-			// Enable the USB common interrupts we care about: Reset, Resume, Suspend.
 			// Without this, we USBCIF.SUSPENDIF will not get set (the datasheet is incomplete).
 			USBCIE = 0b0111;
-//			printf("awake!\r\n");
+			printf("awake!\r\n");
 			//reset the radio registers
 			//setRadioRegistersInitFunc(dex_RadioSettings);
 			// bootstrap radio again
@@ -1401,9 +1415,11 @@ void main()
 			// clear do_sleep, cause we have just woken up.
 			do_sleep = 0;
 			// power on the BLE module
-//			printf("ble on\r\n");
+			ble_connected = 0;
+			printf("ble on\r\n");
 			setDigitalOutput(10,HIGH);
-			setDigitalInput(12,PULLED);
+			waitDoingServices(250,0,1);
+			//setDigitalInput(12,PULLED);
 		}
 	}
 }

@@ -982,6 +982,7 @@ int doCommand()
 	// if do_sleep is set already, don't process it
 	if(command_buff.commandBuffer[0] == 0x02 && command_buff.commandBuffer[1] == 0xF0 && !do_sleep) {
 		do_sleep = 1;
+		//init_command_buff(&command_buff);
 		return(0);
 	}
 /*	if(commandBuffIs("OK+SLEE")) {
@@ -1270,8 +1271,10 @@ void main()
 		dexbridge_flags &= 0xFFFE;
 		//set up the value for writing to flash
 		memcpy(&writeBuffer, &dexbridge_flags, sizeof(dexbridge_flags));
+		memcpy(&writeBuffer+2, &dex_tx_id, sizeof(dex_tx_id));
+		eraseFlash(FLASH_TX_ID);
 		//write to flash
-		writeToFlash(DEXBRIDGE_FLAGS, sizeof(dexbridge_flags));
+		writeToFlash(DEXBRIDGE_FLAGS, sizeof(dexbridge_flags)+sizeof(dex_tx_id));
 	}
 	
 	// initialise the Radio Regisers
@@ -1289,7 +1292,6 @@ void main()
 	// correct data type.
 	dex_tx_id = *(uint32 XDATA *)FLASH_TX_ID;
 	if(dex_tx_id >= 0xFFFFFFFF) dex_tx_id = 0;
-	dex_tx_id = 0;
 	// store the time we woke up.
 	//wake_time = getMs();
 	// if dex_tx_id is zero, we do not have an ID to filter on.  So, we keep sending a beacon every 5 seconds until it is set.
@@ -1297,6 +1299,7 @@ void main()
 	// Promiscuous mode is allowed in waitForPacket() function (dex_tx_id == 0, will match any dexcom packet).  Just don't send the 
 	// wixel a TXID packet.
 	while(dex_tx_id == 0) {
+		printf("No dex_tx_id.  Sending beacon.\r");
 		// wait until we have a BLE connection
 		while(!ble_connected) doServices(1);
 		//send a beacon packet
@@ -1304,6 +1307,7 @@ void main()
 		//wait 5 seconds
 		waitDoingServices(10000, dex_tx_id_set, 1);
 	}
+	printf("\r\n");
 //	sent_beacon = 1;
 	// MAIN LOOP
 	while (1)
@@ -1319,6 +1323,7 @@ void main()
 		memset(&Pkt, 0, sizeof(Dexcom_packet));
 
 		//continue to loop until we get a packet
+		LED_GREEN(1);
 		printf("%lu - looking for %lu\r\n", getMs(), dex_tx_id);
 		if(!get_packet(&Pkt)) {
 			continue;
@@ -1394,6 +1399,7 @@ void main()
 			LED_GREEN(0);
 			// turn off the BLE module
 			setDigitalOutput(10,LOW);
+			ble_connected = 0;
 			// sleep for around 300s
 			printf("%lu - sleeping\r\n", getMs());
 			radioMacSleep();
@@ -1416,7 +1422,9 @@ void main()
 			USBPOW = 1;
 			// Without this, we USBCIF.SUSPENDIF will not get set (the datasheet is incomplete).
 			USBCIE = 0b0111;
+			LED_GREEN(1);
 			printf("%lu - awake!\r\n", getMs());
+			init_command_buff(&command_buff);
 			//reset the radio registers
 			//setRadioRegistersInitFunc(dex_RadioSettings);
 			// bootstrap radio again

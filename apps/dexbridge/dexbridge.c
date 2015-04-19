@@ -718,7 +718,7 @@ int doCommand()
 		//printf("OK TXID is %lu\r\n", dex_tx_id);
 		//flash can  be read by casting the address of the section of flash we are interested in to the 
 		// type of XDATA we want to read.  That is what is happening in the line below.
-		printf("FLASH_TX_ID has %lu\r\n", *(uint32 XDATA *)FLASH_TX_ID);
+		printf("FLASH_TX_ID has %lu (%lx)\r\n", *(uint32 XDATA *)FLASH_TX_ID, *(uint32 XDATA *)FLASH_TX_ID);
 		// tell them OK, we got the ID, and print it out as the ID and the long value we are using.
 		printf("OK TXID is %s (%lu)\r\n", srcAddr, dex_tx_id);
 		return 0;

@@ -65,15 +65,15 @@ void usbToUartService()
     }
 
     // Control lines controlled by computer.
-    P1_0 = !(usbComRxControlSignals() & ACM_CONTROL_LINE_DTR);
-    P1_1 = !(usbComRxControlSignals() & ACM_CONTROL_LINE_RTS);
+    //P1_0 = !(usbComRxControlSignals() & ACM_CONTROL_LINE_DTR);
+    //P1_1 = !(usbComRxControlSignals() & ACM_CONTROL_LINE_RTS);
     P1DIR |= (1<<0) | (1<<1);
 
     // Control lines controlled by device.
 
     signals = 0;
-    if (!P1_2){ signals |= ACM_SERIAL_STATE_TX_CARRIER; } // TX Carrier = DSR
-    if (!P1_3){ signals |= ACM_SERIAL_STATE_RX_CARRIER; } // RX Carrier = CD
+    //if (!P1_2){ signals |= ACM_SERIAL_STATE_TX_CARRIER; } // TX Carrier = DSR
+    //if (!P1_3){ signals |= ACM_SERIAL_STATE_RX_CARRIER; } // RX Carrier = CD
     usbComTxControlSignals(signals);
 }
 

@@ -87,23 +87,40 @@ elsewhere.  This small bridge rig should be kept nearby the T1D at all times.
 //#include <sleep.h>
 
 
-// use power mode = 1 (PM2)
-#define SLEEP_MODE_USING (0x02)
+// use power mode = 2 (PM2)
+// NOTE:  This is now set in goToSleep, and the define is no longer required.
+//#define SLEEP_MODE_USING (0x02)
 //define the FLASH_TX_ID address.  This is the address we store the Dexcom TX ID number in.
 #define FLASH_TX_ID		(0x77F8)
 //define the DEXBRIDGE_FLAGS address.  This is the address we store the Dexbridge flags in.
-#define DEXBRIDGE_FLAGS	(0x77F6)
+#define DEXBRIDGE_FLAGS	(FLASH_TX_ID-2)
+//define the FLASH_BATTERY_MAX address.  This is the address we store the battery_maximum value in flash.
+#define FLASH_BATTERY_MAX (DEXBRIDGE_FLAGS-1)
+//define the FLASH_BATTERY_MIN address.  This is the address we store the battery_maximum value in flash.
+#define FLASH_BATTERY_MIN (FLASH_BATTERY_MAX-1)
 //define the maximum command string length for USB commands.
 #define USB_COMMAND_MAXLEN	(32)
 //defines the number of channels we will scan.
 #define NUM_CHANNELS		(4)
 //defines battery minimum and maximum voltage values for converting to percentage.
-// assuming that there is a 2k7 ohm resistor between VIN and P0_0, and a 10k ohm resistor between P0_0 and GND.
-#define BATTERY_MAXIMUM		(1771)
-#define BATTERY_MINIMUM		(1416)
+/* To calculate the value for a specific voltage, use the following formula
+	val = (((voltage/RH+RL)*RL)/1.25)*2047
+where:
+	val is the value to enter into one of the limits.  Rounded to the nearest Integer.
+	voltage is the voltage you want the value for.
+	RH is the Larger resistor value in the voltage divider circuit (VIN to P0_0)
+	RL is the lower resistor value in the voltage divider circuit (P0_0 to Ground)
+*/
+// assuming that there is a 2k7 ohm resistor between VIN and P0_0, and a 10k ohm resistor between P0_0 and GND, as per dexbridge circuit diagrams
+#define BATTERY_MAXIMUM		(1814) //4.1V
+#define BATTERY_MINIMUM		(1416) //3.2V
+//If using Chris Bothelo's bridge circuit, comment out the two lines above, uncomment the two lines below, and recompile the app.
+//#define BATTERY_MAXIMUM (2034)
+//#define BATTERY_MINIMUM (1587)
 // defines the Dexbridge protocol functional level.  Sent in each packet as the last byte.
 #define DEXBRIDGE_PROTO_LEVEL (0x01)
 
+XDATA uint16 wake_before_packet = 30;	// seconds to wake before a packet is expected
 static volatile BIT do_sleep = 0;		// indicates we should go to sleep between packets
 static volatile BIT is_sleeping = 0;	// flag indicating we are sleeping.
 //static volatile BIT do_close_usb = 1;	// indicates we should close the USB port when we go to sleep.
@@ -126,7 +143,9 @@ static uint8 save_IEN2;
 XDATA uint32 dex_tx_id; 
 // Dexbridge flags.  Currently only the following flags are used:
 //	0	-	BLE name initialised. 1= not initialised, 0= initialised.
-XDATA uint16  dexbridge_flags;
+XDATA uint16 dexbridge_flags;
+XDATA uint16 battery_maximum = BATTERY_MAXIMUM;
+XDATA uint16 battery_minimum = BATTERY_MINIMUM;
 
 // message  buffer for communicating with the BLE module
 XDATA uint8 msg_buf[82];
@@ -519,7 +538,7 @@ uint32 calcSleep(uint16 seconds) {
 	//printf("\r\ndiff - getMs-pkt_time: %lu\r\n", diff);
 	diff = diff/1000;
 	while(diff>seconds)
-		diff-=seconds;
+		diff-= 300;
 	//printf("\r\ndiff/1000: %lu\r\n", diff);
 	return diff;
 }
@@ -596,6 +615,7 @@ void goToSleep (uint16 seconds) {
 		sleep_time = (unsigned short)calcSleep(seconds);
 		printf("sleep_time: %u\r\n", sleep_time);
 		if (sleep_time == 0 || sleep_time > seconds) {
+			printf("too late to sleep, cancelling\r\n");
 			LED_YELLOW(1);
 			// Switch back to high speed
 			boardClockInit();   
@@ -694,21 +714,21 @@ void updateLeds()
 {
 	if (do_sleep)
 	{
-//		if(is_sleeping)
-//		{
-//			LED_YELLOW((getMs()&0x00000F00) == 0x100);
-//		}
-//		else
-//		{
-			LED_GREEN((getMs()&0x00000380) == 0x80);
-//		}
+		if(is_sleeping)
+		{
+			LED_YELLOW((getMs()&0x00000F00) == 0x100);
+		}
+		//else
+		//{
+		//	LED_GREEN((getMs()&0x00000380) == 0x100);
+		//}
 	}
 
-	if(usb_connected) {
+	//if(usb_connected) {
 		LED_YELLOW(ble_connected);
-	} else { 
-		LED_YELLOW(0);
-	}
+	//} else { 
+	//	LED_YELLOW(0);
+	//}
 	//LED_YELLOW(1);
 	//LED_RED(radioQueueRxCurrentPacket());
 //	LED_RED(0);
@@ -794,12 +814,13 @@ void bleConnectMonitor() {
 	static uint32 timer;
 	//to store P1_2 the last time we looked.
 	static BIT last_check;
-	// if P1_2 is high, ple_connected is low, and the last_check was low, sav the time and set last_check.
+	// if P1_2 is high, ble_connected is low, and the last_check was low, sav the time and set last_check.
 	if (P1_2 && !ble_connected && !last_check) {
 		timer=getMs();
 		last_check = 1;
 	// otherwise if P1_2 goes low, and ble_connected is high, we cancel everything.
-	} else if (!P1_2 && ble_connected) {
+	} else if (!P1_2) {
+		ble_connected =0;
 		last_check = 0;
 		ble_connected = 0;
 	//otherwise, if P1_2 has been high for more than 550ms, we can safely assume we have ble_connected, so say so.
@@ -843,14 +864,22 @@ void configBt() {
 
 // function to convert a voltage value to a battery percentage
 uint8 batteryPercent(uint16 val){
-	float pct=val;
-	if(val < BATTERY_MINIMUM)
+	XDATA float pct=val;
+	// if val is >100 and < battery_minimum...
+	if(val < battery_minimum && val >100) {
+		//save the new minimum value and return 0
+		battery_minimum = val;
 		return 0;
-	if(val > BATTERY_MAXIMUM)
+	}
+	// if val is <2047 (ADC maximum) > battery_maximum....
+	if(val > battery_maximum && val < 2047) {
+		//save the new maximum value and return 100
+		battery_maximum = val;
 		return 100;
-	pct = ((pct - BATTERY_MINIMUM)/(BATTERY_MAXIMUM-BATTERY_MINIMUM))*100;
+	}
+	// otherwise calculate the battery % and return.
+	pct = ((pct - battery_minimum)/(battery_maximum-battery_minimum))*100;
 //	printf("%i, %i, %i, %i\n", val, BATTERY_MINIMUM, BATTERY_MAXIMUM, (uint8)pct);
-//	delayMs(2500);
 	return (uint8)pct;
 }
 
@@ -982,7 +1011,7 @@ int doCommand()
 	// if do_sleep is set already, don't process it
 	if(command_buff.commandBuffer[0] == 0x02 && command_buff.commandBuffer[1] == 0xF0 && !do_sleep) {
 		do_sleep = 1;
-		//init_command_buff(&command_buff);
+		init_command_buff(&command_buff);
 		return(0);
 	}
 /*	if(commandBuffIs("OK+SLEE")) {
@@ -1356,9 +1385,10 @@ void main()
 			
 			// if we got the ACK, get out of the loop.
 			// if we have sent a number of packets and still have not got an ACK, time to sleep.  We keep trying for up to 3 minutes.
-			if((getMs() - pkt_time) >= 120000)
+			if((getMs() - pkt_time) >= 120000) {
 				sendBeacon();
 				do_sleep = 1;
+			}
 		}
 			
 		// can't safely sleep if we didn't get an ACK, or if we are already sleeping!
@@ -1401,9 +1431,9 @@ void main()
 			setDigitalOutput(10,LOW);
 			ble_connected = 0;
 			// sleep for around 300s
-			printf("%lu - sleeping\r\n", getMs());
+			printf("%lu - sleeping for %u\r\n", getMs(), 300-wake_before_packet);
 			radioMacSleep();
-			goToSleep(275);   //
+			goToSleep(295-wake_before_packet);   //
 			radioMacResume();
 			// reset the UART
 			openUart();

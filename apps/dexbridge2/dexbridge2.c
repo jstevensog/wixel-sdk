@@ -115,7 +115,7 @@ where:
 // defines the Dexbridge protocol functional level.  Sent in each packet as the last byte.
 #define DEXBRIDGE_PROTO_LEVEL (0x01)
 
-XDATA uint16 wake_before_packet = 32;	// seconds to wake before a packet is expected
+XDATA uint16 wake_before_packet = 40;	// seconds to wake before a packet is expected
 static volatile BIT do_sleep = 0;		// indicates we should go to sleep between packets
 static volatile BIT is_sleeping = 0;	// flag indicating we are sleeping.
 //static volatile BIT do_close_usb = 1;	// indicates we should close the USB port when we go to sleep.
@@ -125,6 +125,8 @@ static volatile BIT writing_flash;		// indicates if we are writing to flash.
 static volatile BIT ble_sleeping;		// indicates if we have recieved a message from the BLE module that it is sleeping, or if false, it is awake.
 static volatile BIT dex_tx_id_set;		// indicates if the Dexcom Transmitter id (dex_tx_id) has been set.  Set in doServices.
 static volatile BIT ble_connected;		// bit indicating the BLE module is connected to the phone.  Prevents us from sending data without this.
+static volatile BIT save_settings;			// flag to indicate that settings should be saved to flash.
+static volatile BIT initialised;		//flag to indicate we have passed the initialisation.
 static volatile int start_channel = 0;	// the radio channel we will start looking for packets on.
 static volatile uint32 dly_ms = 0;
 static volatile uint32 pkt_time = 0;
@@ -134,6 +136,8 @@ static uint8 save_IEN0;
 static uint8 save_IEN1;
 static uint8 save_IEN2;
 XDATA uint8 battery_capacity=0;
+XDATA uint32 last_beacon=0;
+XDATA uint32 last_battery=0;
 
 // Dexcom Transmitter Source Address to match against.
 XDATA uint32 dex_tx_id; 
@@ -159,6 +163,8 @@ int doServices(uint8 bWithProtocol);
 uint32 getSrcValue(char srcVal);
 // prototype for batteryPercent function
 uint8 battteryPercent(uint32 val);
+// prototype for sendBeacon function
+void sendBeacon(void);
 
 
 
@@ -267,6 +273,7 @@ void saveSettingsToFlash()
 		eraseFlash(FLASH_TX_ID);
 		writeToFlash(FLASH_BATTERY_MIN, sizeof(battery_minimum)+sizeof(battery_maximum)+sizeof(dexbridge_flags)+sizeof(dex_tx_id));
 		writing_flash=0;
+		save_settings=0;
 } 
 
 
@@ -824,6 +831,8 @@ void bleConnectMonitor() {
 	static uint32 timer;
 	//to store P1_2 the last time we looked.
 	static BIT last_check;
+	if(!initialised)
+		return;
 	// if P1_2 is high, ble_connected is low, and the last_check was low, sav the time and set last_check.
 	if (P1_2 && !ble_connected && !last_check) {
 		timer=getMs();
@@ -880,13 +889,13 @@ uint8 batteryPercent(uint16 val){
 	if((val < (battery_minimum - 23)) && (val >100)) {
 		//save the new minimum value with an offset of approx 1.2% (0.05V)
 		battery_minimum = val;
-		saveSettingsToFlash();
+		save_settings = 1;
 	}
 	// if val is <2047 (ADC maximum 1.2V) and > battery_maximum....
 	if((val > (battery_maximum + 23)) && (val < 2047)) {
 		//save the new maximum value with an offset of approx 1.2% (0.05V)
 		battery_maximum = val;
-		saveSettingsToFlash();
+		save_settings = 1;;
 	}
 	// otherwise calculate the battery % and return.
 	pct = ((pct - battery_minimum)/(battery_maximum - battery_minimum)) * 100;
@@ -935,6 +944,8 @@ void sendBeacon()
 {
 	//char array to store the response in.
 	uint8 XDATA cmd_response[7];
+	//return if we don't have a connection or if we have already sent a beacon
+	printf("sending beacon Now\r\n");
 	//prepare the response
 	//responding with number of bytes,
 	cmd_response[0] = sizeof(cmd_response);
@@ -944,7 +955,6 @@ void sendBeacon()
 	memcpy(&cmd_response[2], &dex_tx_id, sizeof(dex_tx_id));
 	cmd_response[6] = DEXBRIDGE_PROTO_LEVEL;
 	send_data(cmd_response, sizeof(cmd_response));
-	sent_beacon = 1;
 }
 
 //structure of a USB command
@@ -1023,7 +1033,8 @@ int doCommand()
 		saveSettingsToFlash();
 		// send back the TXID we think we got in response
 		printf("dex_tx_id: %lu, FLASH_TX_ID: %lu\r\n", dex_tx_id, *(uint32 XDATA *)FLASH_TX_ID); 
-		sendBeacon();
+		//sendBeacon();
+		sent_beacon = 0;
 		return 0;
 	}
 	/* command 0xF0 is an acknowledgement sent by the controlling device of a data packet.
@@ -1117,6 +1128,11 @@ int doServices(uint8 bWithProtocol)
 	updateLeds();
 	usbComService();
 	bleConnectMonitor();
+/*	if(initialised && ble_connected && !sent_beacon) {
+		sent_beacon = 1;
+		sendBeacon();
+	}
+*/
 	if(bWithProtocol)
 		return controlProtocolService();
 	return 1;
@@ -1254,18 +1270,18 @@ int WaitForPacket(uint16 milliseconds, Dexcom_packet* pkt, uint8 channel)
 int get_packet(Dexcom_packet* pPkt)
 {
 	//static uint32 last_cycle_time;
-	uint32 now=0;
-	int delay;
+	//uint32 now=0;
+	int delay = 0;
 	//variable holding an index to each channel parameter set.  Set to the first channel.
 	int nChannel = 0;
 	//printf("getting Packet\r");
 	// start channel is the channel we initially do our infinite wait on.
 	for(nChannel = start_channel; nChannel < NUM_CHANNELS; nChannel++)
 	{
-		now = getMs();
+		//now = getMs();
 		//if(last_cycle_time == 0)
 		//	last_cycle_time = now;
-		delay = 60; // - (now - last_cycle_time);
+		//delay = 60; // - (now - last_cycle_time);
 		//delay = 50 - (now - last_cycle_time);
 		// We only sit on each channel for 50ms.  This is long enough to get a packet (4ms)
 		// but not so long as prevent doServices() to process the USB port.
@@ -1288,6 +1304,7 @@ int get_packet(Dexcom_packet* pPkt)
 				return 0;
 			}
 		}
+		delay = 600;
 	}
 	//printf("leaving getPacket\r\n");
 	return 0;
@@ -1306,8 +1323,6 @@ void LineStateChangeCallback(uint8 state)
 
 void main()
 {   
-	XDATA uint32 last_beacon=0;
-	XDATA uint32 last_battery=0;
 	uint16 rpt_pkt=0;
 	systemInit();
 	//initialise the USB port
@@ -1346,7 +1361,7 @@ void main()
 		dexbridge_flags &= 0xFFFE;
 		printf("dexbridge_flags: %x\r\n", dexbridge_flags);
 		//set up the value for writing to flash
-		saveSettingsToFlash();
+		save_settings = 1;
 	} 
 	//retrieve the battery_minimum and battery_maximum values from flash
 	battery_minimum = *(uint16 XDATA *)FLASH_BATTERY_MIN;
@@ -1356,7 +1371,7 @@ void main()
 	if(battery_minimum == 0xFFFF || battery_maximum == 0xFFFF) {
 		battery_minimum = BATTERY_MINIMUM;
 		battery_maximum = BATTERY_MAXIMUM;
-		saveSettingsToFlash();
+		save_settings = 1;
 	}
 	// initialise the Radio Regisers
 	setRadioRegistersInitFunc(dex_RadioSettings);
@@ -1368,29 +1383,35 @@ void main()
 	// we haven't sent a beacon packet yet, so say so.
 	sent_beacon = 0;
 	LED_GREEN(1);
+	last_beacon = getMs();
 	// read the flash stored value of our TXID.
 	// we do this by reading the address we are interested in directly, cast as a pointer to the 
 	// correct data type.
 	dex_tx_id = *(uint32 XDATA *)FLASH_TX_ID;
-	if(dex_tx_id >= 0xFFFFFFFF) dex_tx_id = 0;
+	if(dex_tx_id >= 0xFFFFFFFF) 
+		dex_tx_id = 0;
 	// store the time we woke up.
 	//wake_time = getMs();
 	// if dex_tx_id is zero, we do not have an ID to filter on.  So, we keep sending a beacon every 5 seconds until it is set.
 	// Comment out this while loop if you wish to use promiscuous mode and receive all Dexcom tx packets from any source (inadvisable).
 	// Promiscuous mode is allowed in waitForPacket() function (dex_tx_id == 0, will match any dexcom packet).  Just don't send the 
 	// wixel a TXID packet.
+	initialised = 1;
 	while(dex_tx_id == 0) {
 		printf("No dex_tx_id.  Sending beacon.\r\n");
 		// wait until we have a BLE connection
 		while(!ble_connected) doServices(1);
 		//send a beacon packet
 		sendBeacon();
+		doServices(0);
 		//wait 5 seconds
 		waitDoingServices(10000, dex_tx_id_set, 1);
 	}
-	last_beacon = getMs();
+	// if we still have settings to save (no TXID set), save them
+	if(save_settings)
+		saveSettingsToFlash();
+	// store the last beacon time
 	printf("\r\n");
-//	sent_beacon = 1;
 	// MAIN LOOP
 	while (1)
 	{
@@ -1415,9 +1436,8 @@ void main()
 		//while we are getting a packet, send the beacon every 6 minutes.
 		if(!get_packet(&Pkt)) {
 			//printf("last_beacon: %lu, getMs(): %lu\r", last_beacon, getMs());
-			if((getMs()-last_beacon)>2700000 || last_beacon == 0) {
-				printf("Sending Beacon\r\n");
-				sendBeacon();
+			if((getMs() - last_beacon) > 187000 || last_beacon == 0)  {
+				sent_beacon = 0;
 				last_beacon=getMs();
 			}
 			continue;
@@ -1429,27 +1449,30 @@ void main()
 		LED_RED(0);
 		printf("%lu - got pkt\r\n", getMs());
 		while (!do_sleep){
-			if((getMs()-last_battery)>=300000 || last_battery == 0) {
+/*			if((getMs()-last_battery)>=300000 || last_battery == 0) {
 				printf("%lu - getting battery capacity\r\n", getMs());
 				battery_capacity = batteryPercent(adcRead(0 | ADC_REFERENCE_INTERNAL));
 				last_battery=getMs();
 			}
-			while(!ble_connected) {
+*/			while(!ble_connected) {
 				printf("%lu - packet waiting\r\n", getMs());
 				setDigitalOutput(10,HIGH);
 				waitDoingServices(500, ble_connected,0);
 			}
 			printf("%lu - ble_connected: %u, sent_beacon: %u\r\n", getMs(), ble_connected, sent_beacon);
-			if(ble_connected && !sent_beacon) {
+/*			if(ble_connected && !sent_beacon) {
 				sendBeacon();
 				sent_beacon = 1;
 				printf("%lu - sent beacon\r\n", getMs());
 				//break;
 			}
-		
+*/		
 			printf("%lu - send pkt\r\n", getMs());
 			// send the data packet
 			print_packet(&Pkt);
+			//save settings to flash if we need to
+			if(save_settings)
+				saveSettingsToFlash();
 			// wait 10 seconds, listenting for the ACK.
 			printf("%lu - waiting for ack\r\n", getMs());
 			waitDoingServices(10000, 0, 1);
@@ -1457,7 +1480,8 @@ void main()
 			// if we got the ACK, get out of the loop.
 			// if we have sent a number of packets and still have not got an ACK, time to sleep.  We keep trying for up to 3 minutes.
 			if((getMs() - pkt_time) >= 120000) {
-				sendBeacon();
+				//sendBeacon();
+				sent_beacon = 0;
 				do_sleep = 1;
 			}
 		}
@@ -1502,7 +1526,7 @@ void main()
 			setDigitalOutput(10,LOW);
 			ble_connected = 0;
 			// sleep for around 300s
-			printf("%lu - sleeping for %u\r\n", getMs(), 300-wake_before_packet);
+			printf("%lu - sleeping for %u\r\n", getMs(), 295-wake_before_packet);
 			radioMacSleep();
 			goToSleep(295-wake_before_packet);   //
 			radioMacResume();
@@ -1525,6 +1549,8 @@ void main()
 			USBCIE = 0b0111;
 			LED_GREEN(1);
 			printf("%lu - awake!\r\n", getMs());
+			// get the most recent battery capacity
+			battery_capacity = batteryPercent(adcRead(0 | ADC_REFERENCE_INTERNAL));
 			init_command_buff(&command_buff);
 			//reset the radio registers
 			//setRadioRegistersInitFunc(dex_RadioSettings);

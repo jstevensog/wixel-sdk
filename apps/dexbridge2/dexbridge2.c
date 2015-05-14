@@ -1092,7 +1092,7 @@ int controlProtocolService()
 		else {
 			b = uart1RxReceiveByte();
 		}
-		putchar(b);
+		//putchar(b);
 		command_buff.commandBuffer[command_buff.nCurReadPos] = b;
 		command_buff.nCurReadPos++;
 		//printf("%x\r\n", command_buff.commandBuffer[0]);
@@ -1193,7 +1193,8 @@ int WaitForPacket(uint16 milliseconds, Dexcom_packet* pkt, uint8 channel)
 	while (!milliseconds || (getMs() - start) < milliseconds)
 	{
 		//see if anything is required to be done immediately, like process a command on the USB.
-		if(!doServices(1))
+		//printf("start: %lu, getMs: %lu\r", start, getMs());
+		if(!doServices(1) || (getMs() - start) > 320000)
 			return -1;			// cancel wait, and cancel calling function
 	
 		if (packet = radioQueueRxCurrentPacket())
@@ -1434,14 +1435,18 @@ void main()
 		LED_GREEN(1);
 		//printf("looking for %lu\r",dex_tx_id);
 		//while we are getting a packet, send the beacon every 6 minutes.
-		if(!get_packet(&Pkt)) {
+		if(get_packet(&Pkt) == 0) {
 			//printf("last_beacon: %lu, getMs(): %lu\r", last_beacon, getMs());
-			if((getMs() - last_beacon) > 187000 || last_beacon == 0)  {
+/*			if((getMs() - last_beacon) > 187000 || last_beacon == 0)  {
 				sent_beacon = 0;
 				last_beacon=getMs();
 			}
+*/			if(ble_connected) 
+				printf("\r\nSending Beacon\r\n");
+				sendBeacon();
 			continue;
 		}
+
 		LED_GREEN(0);
 		// ok, we got a packet
 		// when we send a packet, we wait until we get an ACK to put us to sleep.

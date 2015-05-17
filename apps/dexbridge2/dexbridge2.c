@@ -444,6 +444,26 @@ uint8 getPacketPassedChecksum(Dexcom_packet* p)
 	return ((p->LQI & 0x80)==0x80) ? 1:0;
 }
 */
+//format an array to decode the dexcom transmitter name from a Dexcom packet source address.
+XDATA char SrcNameTable[32] = { '0', '1', '2', '3', '4', '5', '6', '7',
+						  '8', '9', 'A', 'B', 'C', 'D', 'E', 'F',
+						  'G', 'H', 'J', 'K', 'L', 'M', 'N', 'P',
+						  'Q', 'R', 'S', 'T', 'U', 'W', 'X', 'Y' };
+
+// convert the passed uint32 Dexcom source address into an ascii string in the passed char addr[6] array.
+char *dexcom_src_to_ascii(uint32 src)
+{
+	XDATA char addr[6];
+	//each src value is 5 bits long, and is converted in this way.
+	addr[0] = SrcNameTable[(src >> 20) & 0x1F];		//the last character is the src, shifted right 20 places, ANDED with 0x1F
+	addr[1] = SrcNameTable[(src >> 15) & 0x1F];		//etc
+	addr[2] = SrcNameTable[(src >> 10) & 0x1F];		//etc
+	addr[3] = SrcNameTable[(src >> 5) & 0x1F];		//etc
+	addr[4] = SrcNameTable[(src >> 0) & 0x1F];		//etc
+	addr[5] = 0;	//end the string with a null character.
+	return (char *)addr;
+}
+
 //Open the UART and set 9600,n,1 parameters.
 void openUart()
 {
@@ -515,34 +535,7 @@ void switchToRCOSC(void)
 }
 
 
-/*
-// ISR for catching Sleep Timer interrupts
-ISR (ST, 0) 
-{
-	IRCON &= ~0x80; 	// clear IRCON.STIF
-	SLEEP &= ~sleep_mode; 	// clear SLEEP.MODE
-	WORIRQ &= ~0x11; 	// clear Sleep timer EVENT0_MASK and EVENT0_FLAG
-	WORCTRL &= ~0x03; 	// Set timer resolution back to 1 period.
 
-	IEN0 = save_IEN0;
-	IEN0 &= ~0x20; 		// clear IEN0.STIE
-	IEN1 = save_IEN1;	// restore IEN1
-	IEN2 = save_IEN2;	// restore IEN2
-	U1UCR |= 0x80;	// flush UART1.
-	
-
-//	if(do_close_usb)
-//	{
-//		// wake up USB again
-//		usbPoll();
-//	}
-
-	// we not sleeping no more
-	is_sleeping = 0; 
-	// power on the BLE module
-	//setDigitalOutput(10,1);
-}
-*/
 
 uint32 calcSleep(uint16 seconds) {
 	uint32 diff = 0;
@@ -735,20 +728,19 @@ void updateLeds()
 		{
 			LED_YELLOW((getMs()&0x00000F00) == 0x100);
 		}
-		//else
-		//{
-		//	LED_GREEN((getMs()&0x00000380) == 0x100);
-		//}
-	}
-
-	//if(usb_connected) {
+	} 
+	else 
+	{
 		LED_YELLOW(ble_connected);
-	//} else { 
-	//	LED_YELLOW(0);
-	//}
-	//LED_YELLOW(1);
-	//LED_RED(radioQueueRxCurrentPacket());
-//	LED_RED(0);
+		if(dex_tx_id_set)
+		{
+			LED_RED(radioQueueRxCurrentPacket());
+		} 
+		else 
+		{
+			LED_RED((getMs() & 0x0000FF00) == 0x1300);
+		}
+	}
 }
 
 // This is called by printf and printPacket.
@@ -1032,7 +1024,7 @@ int doCommand()
 */
 		saveSettingsToFlash();
 		// send back the TXID we think we got in response
-		printf("dex_tx_id: %lu, FLASH_TX_ID: %lu\r\n", dex_tx_id, *(uint32 XDATA *)FLASH_TX_ID); 
+		printf("dex_tx_id: %lu (%s), FLASH_TX_ID: %lu\r\n", dex_tx_id, dexcom_src_to_ascii(dex_tx_id), *(uint32 XDATA *)FLASH_TX_ID); 
 		//sendBeacon();
 		sent_beacon = 0;
 		return 0;
@@ -1050,7 +1042,7 @@ int doCommand()
 	}
 	if(command_buff.commandBuffer[0] == 0x53 || command_buff.commandBuffer[0] == 0x73) {
 		printf("Processing Status Command\r\n");
-		printf("dex_tx_id: %lu, FLASH_TX_ID: %lu\r\n", dex_tx_id, *(uint32 XDATA *)FLASH_TX_ID);
+		printf("dex_tx_id: %lu (%s), FLASH_TX_ID: %lu\r\n", dex_tx_id, dexcom_src_to_ascii(dex_tx_id), *(uint32 XDATA *)FLASH_TX_ID);
 		printf("dexbridge_flags: %x, DEXBRIDGE_FLAGS: %x\r\n", dexbridge_flags, *(uint16 XDATA *)DEXBRIDGE_FLAGS); 
 		printf("battery_maximum: %u, FLASH_BATTERY_MAX: %u\r\n", battery_maximum, *(uint16 XDATA *)FLASH_BATTERY_MAX); 
 		printf("battery_minimum: %u, FLASH_BATTERY_MIN: %u\r\n", battery_minimum, *(uint16 XDATA *)FLASH_BATTERY_MIN); 
@@ -1433,7 +1425,7 @@ void main()
 //		}
 		//continue to loop until we get a packet
 		LED_GREEN(1);
-		//printf("looking for %lu\r",dex_tx_id);
+		printf("looking for %lu (%s)\r",dex_tx_id, dexcom_src_to_ascii(dex_tx_id));
 		//while we are getting a packet, send the beacon every 6 minutes.
 		if(get_packet(&Pkt) == 0) {
 			//printf("last_beacon: %lu, getMs(): %lu\r", last_beacon, getMs());

@@ -1,34 +1,21 @@
-/** DEXBRIDGE:
+/** DEXSIM:
 All thanks to Adrien de Croy, who created dexterity-wixel and modified the
-wixel-sdk, upon which dexbridge is based.   
+wixel-sdk, upon which dexsim is based.   
 
 If you are going to build from this source file, please ensure you are using
 Adrien's wixel-sdk or it will not compile.
 
 == Description ==
-A program to allow a wixel to capture packets from a Dexcom G4 Platinum 
-Continuous Glucose Monitor transmitter and send them in text form
-out of the USB port.
+A program to simulate Blood Glucose readings from a Dexcom G4 Transmitter
 
-It also accepts the command TXID, which allows you to see or set the 
-Dexcom Transmitter ID in text form (ie 63GEA).  It will NOT display packets
-unless TXID is set.  Make sure you set it when the wixel is powered or
-detected on USB.
 
 A Wixel running this app appears to the USB host as a Virtual COM Port,
 with USB product ID 0x2200.  To view the output of this app, connect to
 the Wixel's virtual COM port using a terminal program.  Be sure to set your
 terminal's line width to 120 characters or more to avoid line wrapping.
  
-The app uses the radio_queue libray to receive packets.  It does not
-transmit any packets.
-
-The output from this app takes the following format:
-
-The red LED indicates activity on the radio channel (packets being received).
-Since every radio packet has a chance of being lost, there is no guarantee
-that this app will pick up all the packets being sent, and some of
-what it does pick up will be corrupted (indicated by a failed CRC check).
+The app uses the radio_queue libray to transmit packets.  It does not
+recieve any packets.
 
 
 == Parameters ==
@@ -40,32 +27,45 @@ radio_channel: See description in radio_link.h.
 #include <wixel.h>
 #include <usb.h>
 #include <usb_com.h>
-
+#include <radio_com.h>
 #include <radio_registers.h>
-#include <radio_queue.h>
+
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 #include <ctype.h>
-#include <uart1.h>
+#include <random.h>
+#include <math.h>
 
 
-//define the FLASH_TX_ID address.  This is the address we store the Dexcom TX ID number in.
-#define FLASH_TX_ID		(0x77F8)
+//define the FLASH_SETTINGS address.  This is the address we store the Dexcom TX ID number, and various other settings for the simulator.
+#define FLASH_SETTINGS		(0x77DF)
 //define the maximum command string length for USB commands.
 #define USB_COMMAND_MAXLEN	(32)
 //defines the number of channels we will scan.
 #define NUM_CHANNELS		(4)
+//defines for calculating mean_raw_bg
+#define RAWBG_OFFSET		(32000)
+#define RAWBG_FACTOR		(1167)
 
-static volatile BIT do_sleep = 0;		// indicates we should go to sleep between packets
-static volatile BIT is_sleeping = 0;	// flag indicating we are sleeping.
-static volatile BIT do_close_usb = 1;	// indicates we should close the USB port when we go to sleep.
+//storage for the samples for calculation of the next.
+volatile XDATA uint32 sample[3];
+
 static volatile BIT usb_connected;		// indicates DTR set on USB.  Meaning a terminal program is connected via USB for debug.
-static volatile int start_channel = 0;	// the radio channel we will start looking for packets on.
+//static volatile int start_channel = 0;	// the radio channel we will start looking for packets on.
 // char array to use to convert the Dexcom source address long to a string.
-char srcAddr[6];
-// Dexcom Transmitter Source Address to match against.
-uint32 dex_tx_id; 
+XDATA char srcAddr[6];
+// Dexcom Transmitter Source Address to send in packets.
+XDATA uint32 dex_tx_id; 
+
+typedef struct _Settings {
+	uint32 	dex_tx_id;	//4 bytes
+	float	alpha1;		//4 bytes
+	float	alpha2;		//4 bytes
+	float	sigma_a;	//4 bytes
+	uint32	mean_raw_bg;	//4 bytes
+} Settings;
+XDATA Settings flash_settings;
 
 // forward prototypes
 int doServices(uint8 bWithProtocol);
@@ -82,8 +82,8 @@ static uint8 fOffset[NUM_CHANNELS] = {0xCE,0xD5,0xE6,0xE5};
 static uint8 nChannels[NUM_CHANNELS] = { 0, 100, 199, 209 };
 
 
-// writeBuffer holds the data from the computer that we want to write in to flash.
-XDATA uint32 writeBuffer;
+// writeBuffer holds the data that we want to write in to flash.
+XDATA uint8 writeBuffer[sizeof(flash_settings)];
 
 // flashWriteDmaConfig holds the configuration of DMA channel 0, which we use to
 // transfer the data from writeBuffer in to flash.
@@ -198,7 +198,8 @@ void uartDisable() {
 void dex_RadioSettings()
 {
     // Transmit power: one of the highest settings, but not the highest.
-    LoadRFParam(&PA_TABLE0, 0x00);
+	// This is being set to 0 dbm
+    LoadRFParam(&PA_TABLE0, 0xFE);
 
     // Set the center frequency of channel 0 to 2403.47 MHz.
     // Freq = 24/2^16*(0xFREQ) = 2403.47 MHz
@@ -313,42 +314,7 @@ typedef struct _Dexcom_packet
 	uint16	filtered;
 	uint8	battery;
 	uint8	unknown;
-	uint8	checksum;
-	int8	RSSI;
-	uint8	LQI;
 } Dexcom_packet;
-
-// getPacketRSSI - returns the RSSI value from the Dexcom_packet passed to it.
-int8 getPacketRSSI(Dexcom_packet* p)
-{
-	// RSSI_OFFSET for 489 kbaud is closer to 73 than 71
-	return (p->RSSI/2)-73;
-}
-
-/*
-//getPacketPassedChecksum - returns the checksum of the Dexcom_packet passed to it.
-uint8 getPacketPassedChecksum(Dexcom_packet* p)
-{
-	//take the LQI value from the packet, AND with 0x80.  If it equals 0x80, then return 1, otherwise return 0.
-	return ((p->LQI & 0x80)==0x80) ? 1:0;
-}
-*/
-//Open the UART and set 9600,n,1 parameters.
-void openUart()
-{
-    uart1Init();
-    uart1SetBaudRate(9600); // Set 9600 baud on UART1
-	U1UCR &= ~0x4C;	//disable CTS/RTS on UART1, no Parity, 1 Stop Bit
- //   uart1SetParity(0);
- //   uart1SetStopBits(1);
-}
-
-// Configure the BlueTooth module with a name.
-void configBt() {
-    //uartEnable();
-    printf("AT+NAMEDxB%0x%0x%0x%0x\r", serialNumber[3],serialNumber[2],serialNumber[1],serialNumber[0]);
-    //uartDisable();
-}
 
 
 /** Functions *****************************************************************/
@@ -363,104 +329,16 @@ void makeAllOutputs(BIT value)
     }
 }
 
-// use power mode = 1 (PM2)
-#define SLEEP_MODE_USING (0x01)
-
-// ISR for catching Sleep Timer interrupts
-ISR (ST, 0) 
-{
-	IRCON &= ~0x80; 	// clear IRCON.STIF
-	SLEEP &= ~SLEEP_MODE_USING; 	// clear SLEEP.MODE
-	IEN0 &= ~0x20; 		// clear IEN0.STIE
-	WORIRQ &= ~0x11; 	// clear Sleep timer EVENT0_MASK and EVENT0_FLAG
-	WORCTRL &= ~0x03; 	// Set timer resolution back to 1 period.
-
-	if(do_close_usb)
-	{
-		// wake up USB again
-		usbPoll();
-	}
-		
-	// we not sleeping no more
-	is_sleeping = 0; 
-}
-
-void goToSleep (uint16 seconds) {
-    unsigned char temp;
-    // The wixel docs note that any input pins consume ~30uA
-    makeAllOutputs(LOW);
-
-    IEN0 |= 0x20; // Enable global ST interrupt [IEN0.STIE]
-    WORIRQ |= 0x10; // enable sleep timer interrupt [EVENT0_MASK]
-
-	/* the sleep mode i've chosen is PM2. According to the CC251132 datasheet,
-	typical power consumption from the SoC should be around 0.5uA */
-	/*The SLEEP.MODE will be cleared to 00 by HW when power
-	mode is entered, thus interrupts are enabled during power modes.
-	All interrupts not to be used to wake up from power modes must
-	be disabled before setting SLEEP.MODE!=00.*/
-    
-	// sleep power mode 2 is incompatible with USB - as USB registers lose state in this mode.
-	
-	SLEEP |= SLEEP_MODE_USING; // SLEEP.MODE = PM2
-
-	if(do_close_usb)
-	{
-		// disable the USB module
-		SLEEP &= ~(1<<7); // Disable the USB module (SLEEP.USB_EN = 0).
-		disableUsbPullup();
-		usbDeviceState = USB_STATE_DETACHED;
-	}
-		
-    // Reset timer, update EVENT0, and enter PM2
-    // WORCTRL[2] = Reset Timer
-    // WORCTRL[1:0] = Sleep Timer resolution
-    // 00 = 1 period
-    // 01 = 2^5 periods
-    // 10 = 2^10 periods
-    // 11 = 2^15 periods
-
-    // t(event0) = (1/32768)*(WOREVT1 << 8 + WOREVT0) * timer res
-    // e.g. WOREVT1=0,WOREVT0=1,res=2^15 ~= 0.9766 second
-
-    WORCTRL |= 0x04; // Reset
-    // Wait for 2x+ve edge on 32kHz clock
-    temp = WORTIME0;
-    while (temp == WORTIME0) {};
-    temp = WORTIME0;
-    while (temp == WORTIME0) {};
-
-    WORCTRL |= 0x03; // 2^15 periods
-    WOREVT1 = (seconds >> 8);
-    WOREVT0 = (seconds & 0xff); //300=293 s
-
-    PCON |= 0x01; // PCON.IDLE = 1;
-	
-	is_sleeping = 1;
-}
-
 void updateLeds()
 {
-	if (do_sleep)
-	{
-		if(is_sleeping)
-		{
-			LED_YELLOW((getMs()&0x00000F00) == 0x100);
-		}
-		else
-		{
-			LED_GREEN((getMs()&0x00000380) == 0x80);
-		}
-	}
-
-	LED_RED(radioQueueRxCurrentPacket());
-//	LED_RED(0);
+	LED_YELLOW((getMs()&0x00000F00) == 0x100);
+	LED_GREEN((getMs()&0x00000380) == 0x80);
+	LED_RED(radioComTxAvailable());
 }
 
 // This is called by printf and printPacket.
 void putchar(char c)
 {
-	uart1TxSendByte(c);
 	if (usb_connected)
 		usbComTxSendByte(c);
 }
@@ -508,6 +386,22 @@ uint32 dex_num_decoder(uint16 usShortFloat)
 	usExponent = ((usReversed & 0xE000) >> 13);
 	usMantissa = (usReversed & 0x1FFF);
 	return usMantissa << usExponent;
+}
+
+uint16 dex_num_encoder(uint32 usLongFloat)
+{
+	uint8 usExponent = 0;
+	uint16 usReversed = 0;
+	uint32 usMantissa = usLongFloat;
+	while (usMantissa < 8191) {
+		usMantissa >> 1;
+		usExponent++;
+	}
+	usReversed = usExponent;
+	usReversed << 13;
+	usReversed = usReversed | usMantissa;
+	bit_reverse_bytes((uint8*) &usReversed, 2);
+	return usReversed;
 }
 
 
@@ -578,69 +472,6 @@ uint32 getSrcValue(char srcVal)
 	return i & 0xFF;
 }
 
-
-// structure of a raw record we will send.
-/*typedef struct _RawRecord
-{
-	//uint8	size;	//size of the packet.
-	//uint32	tickcount;	//tick count it was received
-	//uint8	src_addr[6];	//src_addr of the device that sent it
-	//uint32	dex_src_id;		//raw TXID of the Dexcom Transmitter
-	uint16	raw;	//"raw" BGL value.
-	uint16	filtered;	//"filtered" BGL value 
-	uint8	battery;	//battery value
-	//int8	RSSI;	//RSSI level of the transmitter, used to determine if it is in range.
-	//uint8	txid;	//ID of this transmission.  Essentially a sequence from 0-63
-} RawRecord;
-*/
-
-//function to print the passed Dexom_packet as either binary or ascii.
-void print_packet(Dexcom_packet* pPkt)
-{
-	//first normalise the pPkt-txId
-	//uint8 txid = (pPkt->txId & 0xFC) >> 2;
-
-	//Next, convert the pPkt->src_addr to a string and store it in the global srcAddr array for printing.
-	if(usb_connected) {
-		dexcom_src_to_ascii(pPkt->src_addr, srcAddr);
-	/*
-	uint8	len;
-	uint32	dest_addr;
-	uint32	src_addr;
-	uint8	port;
-	uint8	device_info;
-	uint8	txId;
-	uint16	raw;
-	uint16	filtered;
-	uint8	battery;
-	uint8	unknown;
-	uint8	checksum;
-	int8	RSSI;
-	uint8	LQI;
-	*/
-		//print it comma separated.
-		//printf("%s,%lu,%lu,%hhu,%hhi,%hhu\r\n",
-		printf("len:%u, dest_addr:%lu, src_addr:%lu (%s), port:%u, device_info:%u, txId:%u, raw:%u (%lu), filtered:%u (%lu), battery:%u, RSSI:%i, LQI:%u\r\n",
-			pPkt->len,
-			pPkt->dest_addr,
-			pPkt->src_addr,
-			srcAddr,
-			pPkt->port,
-			pPkt->device_info,
-			pPkt->txId,
-			pPkt->raw,
-			dex_num_decoder(pPkt->raw),
-			pPkt->filtered,
-			2 * dex_num_decoder(pPkt->filtered),
-			pPkt->battery,
-			pPkt->RSSI,
-			pPkt->LQI);
-			
-			//txid);r	
-	}
-	
-}
-
 //structure of a USB command
 typedef struct _command_buff
 {
@@ -671,20 +502,6 @@ int command_buff_is(char* command)
 	return memcmp(command, command_buff.commandBuffer, len)==0;
 }
 
-/*
-//convert a string character to an unsigned int byte
-uint8 Hex1ToUint4(char c)
-{
-	if(c >= '0' && c <= '9')
-		return c-'0';
-	if(c >= 'A' && c <= 'F')
-		return c + 10 -'A';
-	if(c >= 'a' && c <= 'f')
-		return c + 10 -'a';
-	return 0;
-}
-*/
-
 // return code dictates whether to cancel out of current packet wait operation.
 // primarily this is so if you change the start channel, it will actually start using that new start channel
 // otherwise there's an infinite wait on when it may fail the initial start channel wait, which if it's interfered with may be forever.
@@ -692,35 +509,62 @@ uint8 Hex1ToUint4(char c)
 //decode and perform the command recieved on a port
 int doCommand()
 {
-	if(command_buff_is("HELLO"))
+	if(command_buff_is("HELLO") || command_buff_is("SAVE"))
 	{
-		printf("OK WIXEL Dexbridge 0.4 (%0x%0x%0x%0x)\r\n", serialNumber[3],serialNumber[2],serialNumber[1],serialNumber[0]);
-//		printf("OK current tick %lu\r\n", getMs());
-//		printf("OK sleep mode is %s\r\n", (do_sleep)?"ON":"OFF");
-		return 1;
+		if(command_buff_is("SAVE"))
+		{
+			//copy flash_settings into the writeBuffer so we can write it to flash
+			memcpy(writeBuffer, &flash_settings, sizeof(flash_settings));
+			printf("Erasing Flash....\r\n");
+			eraseFlash(FLASH_SETTINGS);
+			printf("Writing Flash....\r\n");
+			writeToFlash(FLASH_SETTINGS, sizeof(flash_settings));
+		}
+		dexcom_src_to_ascii(flash_settings.dex_tx_id, srcAddr);
+		printf_fast("OK WIXEL Dexsim 0.1 (%0x%0x%0x%0x)\r\n", serialNumber[3],serialNumber[2],serialNumber[1],serialNumber[0]);
+		printf_fast("TXID: %s\r\n", srcAddr);
+		printf_fast_f("ALPHA1: %f\r\n", flash_settings.alpha1);
+		printf_fast_f("ALPHA2: %f\r\n", flash_settings.alpha2);
+		printf_fast_f("SIGMAA: %f\r\n", flash_settings.sigma_a);
+		printf_fast("RAWBG: %lu\r\n", flash_settings.mean_raw_bg);
+		return 0;
 	}
-/*	if(command_buff_is("SLEEP ON"))
+	if(memcmp(command_buff.commandBuffer, "ALPHA1", 6) == 0)
 	{
-		do_sleep = 1;
-		printf("OK sleep mode on\r\n");
-		return 1;
+		if(command_buff.commandBuffer[6] == ' ') 
+		{
+			flash_settings.alpha1 = atof(&command_buff.commandBuffer[7]);
+		}
+		printf_fast_f("OK ALPHA1 is %f\r\n Remember to Save\r\n", flash_settings.alpha1);
+		return 0;
 	}
-	if(command_buff_is("SLEEP OFF"))
+	if(memcmp(command_buff.commandBuffer, "ALPHA2", 6) == 0)
 	{
-		do_sleep = 0;
-		printf("OK sleep mode off\r\n");
-		return 1;
+		if(command_buff.commandBuffer[6] == ' ') 
+		{
+			flash_settings.alpha2 = atof(&command_buff.commandBuffer[7]);
+		}
+		printf_fast_f("OK ALPHA2 is %f\r\n Remember to Save\r\n", flash_settings.alpha2);
+		return 0;
 	}
-
-	if(memcmp(command_buff.commandBuffer, "BAT", 3) == 0)
+	if(memcmp(command_buff.commandBuffer, "SIGMAA", 6) == 0)
 	{
-		//adcSetMillivoltCalibration(adcReadVddMillivolts());
-		printf("OK: %l\r\n", adcConvertToMillivolts(adcRead(0)));
+		if(command_buff.commandBuffer[6] == ' ') 
+		{
+			flash_settings.sigma_a = atof(&command_buff.commandBuffer[8]);
+		}
+		printf_fast_f("OK SIGMAA is %f\r\n Remember to Save\r\n", flash_settings.sigma_a);
+		return 0;
 	}
-*/
-	if(memcmp(command_buff.commandBuffer, "BTI", 3) == 0)
+	if(memcmp(command_buff.commandBuffer, "RAWBG", 5) == 0)
 	{
-		configBt();
+		if(command_buff.commandBuffer[5] == ' ') 
+		{
+			flash_settings.mean_raw_bg = (atoi(&command_buff.commandBuffer[7])*(RAWBG_FACTOR))+RAWBG_OFFSET;
+		}
+		printf_fast("OK RAWBG is %lu (%u mg/dl, %0.2f mmol/l)\r\n Remember to Save\r\n", 
+		(int)((flash_settings.mean_raw_bg-RAWBG_OFFSET)/RAWBG_FACTOR), 
+		((flash_settings.mean_raw_bg-RAWBG_OFFSET)/RAWBG_FACTOR)/18.02);
 		return 0;
 	}
 	if(memcmp(command_buff.commandBuffer, "TXID", 4) == 0)
@@ -730,28 +574,18 @@ int doCommand()
 			//we are being given a TX ID integer (already encoded)
 			//printf("%s\r\n",&command_buff.commandBuffer[5]);
 			//dex_tx_id = atol(&command_buff.commandBuffer[5]);
-			dex_tx_id = asciiToDexcomSrc(&command_buff.commandBuffer[5]);
-			//copy dex_tx_id into the writeBuffer so we can write it to flash
-			writeBuffer=dex_tx_id;
+			flash_settings.dex_tx_id = asciiToDexcomSrc(&command_buff.commandBuffer[5]);
+			//copy flash_settings into the writeBuffer so we can write it to flash
+			memcpy(writeBuffer, &flash_settings, sizeof(flash_settings));
 			//printf("Erasing....\r\n");
-			eraseFlash(FLASH_TX_ID);
+			eraseFlash(FLASH_SETTINGS);
 			//printf("Writing....\r\n");
-			writeToFlash(FLASH_TX_ID, sizeof(dex_tx_id));
+			writeToFlash(FLASH_SETTINGS, sizeof(flash_settings));
 			//printf("FLASH_TX_ID has %lu\r\n", *(uint32 XDATA *)FLASH_TX_ID); 
+			printf_fast("Flash Saved.\r\n");
 		}
-		dexcom_src_to_ascii(dex_tx_id, srcAddr);
-		//printf("OK TXID is %lu\r\n", dex_tx_id);
-		//flash can  be read by casting the address of the section of flash we are interested in to the 
-		// type of XDATA we want to read.  That is what is happening in the line below.
-		printf("FLASH_TX_ID has %lu (%lx)\r\n", *(uint32 XDATA *)FLASH_TX_ID, *(uint32 XDATA *)FLASH_TX_ID);
-		// tell them OK, we got the ID, and print it out as the ID and the long value we are using.
-		printf("OK TXID is %s (%lu)\r\n", srcAddr, dex_tx_id);
-		return 0;
-	}
-	// this clause can process results from the BLE module.  Mostly we ignore them.
-	if(memcmp(command_buff.commandBuffer, "OK+", 3) == 0)
-	{
-		//printf("%s\r\n", command_buff.commandBuffer);
+		dexcom_src_to_ascii(flash_settings.dex_tx_id, srcAddr);
+		printf_fast("OK TXID is %s (%lu)\r\n", srcAddr, flash_settings.dex_tx_id);
 		return 0;
 	}
 	printf("Unrecognised command\r\n");
@@ -764,7 +598,7 @@ int controlProtocolService()
 	static uint32 cmd_to;
 	// ok this is where we check if there's anything happening incoming on the USB COM port or UART 0 port.
 	int nRet = 1;
-	uint8 b;
+	uint8 b = 0;
 	//if we have timed out waiting for a command, clear the command buffer and return.
 	if(command_buff.nCurReadPos > 0 && (getMs() - cmd_to) > 2000) 
 	{
@@ -774,20 +608,18 @@ int controlProtocolService()
 		return nRet;
 	}	
 	//while we have something in either buffer,
-	while(usbComRxAvailable() || uart1RxAvailable())
+	while(usbComRxAvailable())
 	{
 		// if it is the USB, get the bye from it, otherwise get it from the UART.
 		if (usbComRxAvailable()) {
 			b = usbComRxReceiveByte();
 		}
-		else {
-			b = uart1RxReceiveByte();
-		}
-		//putchar(b);
+		putchar(b);
 		// if it is a CR or LF character, we need to process the command
 		if(b == '\r' || b == '\n')
 		{
 			// ok we got the end of a command;
+			putchar(b);
 			if(command_buff.nCurReadPos)
 			{
 				// do the command
@@ -826,6 +658,7 @@ int doServices(uint8 bWithProtocol)
 	usbComService();
 	if(bWithProtocol)
 		return controlProtocolService();
+	//radioComTxService();
 	return 1;
 }
 
@@ -843,168 +676,61 @@ void swap_channel(uint8 channel, uint8 newFSCTRL0)
 	RFST = 2;   //RX
 }
 
-/* WaitForPacket - Function to wait on a specified channel for a specified period, for a Dexcom packet.
-	Parmeters:
-		milliseconds	-	The specified number of milliseconds to wait on the channel.
-		pkt				-	The Dexcom_packet variable to fill with the packet data.
-		channel			-	The channel to wait for the packet on.
-	Uses:
-		dex_tx_id		-	Global long which is set to the encoded Dexcom Transmitter ID we are 
-							looking for a packet from.
-		nChannels		- 	Global uint8 Array of channels.
-		fOffset			-	Global uint8 Array of frequency offsets.
-						The above two arrays specify the radio parameters for the Dexom channels.
-		
-	Returns:
-		0				-	Timed out waiting for the packet.
-		1				-	Packet from the desired transmitter was recieved with a valid CRC.
-		-1				-	Abandoned waiting for the packet, as a command is available on the USB.
-	
-*/
-int WaitForPacket(uint16 milliseconds, Dexcom_packet* pkt, uint8 channel)
-{
-	// store the current wixel milliseconds so we know how long we are waiting.
-	uint32 start = getMs();
-	// clear the packet pointer we are going to use to detect one.
-	uint8 XDATA * packet = 0;
-	// set the return code to timeout indication, as it is the most likely outcome.
-	int nRet = 0;
-	// lastpktid is static, because we need to store it during between calls.
-	//set lastpktid to a value of 64, because we should NEVER see this value.
-	static uint8 lastpktxid = 64;
-	// a variable to use to convert the pkt-txId to something we can use.
-	uint8 txid = 0;
-	
-	// safety first, make sure the channel is valid, and return with error if not.
-	if(channel >= NUM_CHANNELS)
-		return -1;
-	// set the channel parameters using swap_channel
-	swap_channel(nChannels[channel], fOffset[channel]);
-	// while we haven't reached the delay......
-	while (!milliseconds || (getMs() - start) < milliseconds)
-	{
-		//see if anything is required to be done immediately, like process a command on the USB.
-		if(!doServices(1))
-			return -1;			// cancel wait, and cancel calling function
-	
-		if (packet = radioQueueRxCurrentPacket())
-		{
-			uint8 len = packet[0];
-			// if the packet passed CRC
-			if(radioCrcPassed())
-			{
-				// there's a packet!
-				// Add the Freqency Offset Estimate from the FREQEST register to the channel offset.
-				// This helps keep the receiver on track for any drift in the transmitter.
-				fOffset[channel] += FREQEST;
-				// fetch the packet.
-				// length +2 because we append RSSI and LQI to packet buffer, which isn't shown in len
-				memcpy(pkt, packet, min8(len+2, sizeof(Dexcom_packet))); 
-				
-				// is the pkt->src_addr the one we want?
-				if(pkt->src_addr == dex_tx_id || dex_tx_id == 0)
-				{
-					// subtract channel index from transaction ID.  This normalises it so the same transaction id is for all transmissions of a same packet
-					// and makes masking the last 2 bits safe regardless of which channel the packet was acquired on
-					pkt->txId -= channel;
-					//convert pkt->txId to something we understand
-					txid = (pkt->txId & 0xFC) >> 2;
-					// Is this packet different from the one we got last time?
-					// This test prevents us getting the same packet on multiple channels.
-					if(txid != lastpktxid) 
-					{
-						// ok, packet is valid, and we haven't seen it before.
-						// set the return code and save the packet id for later.
-						nRet = 1;
-						// lines below can be commented/uncommented for debugging
-						//printf("channel %d, %d, %d, ", channel, lastpktxid, txid);
-						//printf("channel %d, ", channel);
-						// save this packet txid for next time.
-						lastpktxid = txid;
-					}
-				}
-			}
-			// the line below can be commented/uncommented for debugging.
-			//else printf("%d bad CRC\r\n", channel);
-			// pull the packet off the queue, so it isn't there next time we look.
-			radioQueueRxDoneWithPacket();
-			//return the correct code.
-			return nRet;
-		}
-	}
-	// we timed out waiting for the packet.
-	return nRet;
-}
-
-/*get_packet - 	A function to scan the 4 Dexcom channels, waiting on each channel for a short period
-				to listen for a packet.
-	Parameters:
-		pPkt	-	Pointer to a Dexcom_packet.
-		
-	Uses:
-				No global variables are used in this function.
-		WaitForPacket(milliseconds, pkt, channel)
-				This function is called to obtain packets.  The return value determines if a packet is
-				available to process, or if something else occurred.
-				get_packet uses a fixed delay of 25 ms on each channel. This is more than adequate to 
-				recieve a packet, which is about 4ms in length.  It cannot be much lower, due to the wixel
-				processing speed.  If you go too low, it will cause the wixel to ignore input on the
-				USB.  Since we need to set the Transmitter ID, this is not a good thing.
-				The Dexcom Tranmsitter sends out a packet in each channel, roughly 500ms apart, every
-				5 minutes.  The combination of get_packet and WaitForPacket ensures we see at least
-				one of the 4 packets each 5 minutes.  WaitForPacket includes code to exclude duplicate
-				packets in each cycle.  We grab the first packet with an ID we didn't see last time, and
-				ignore any packets that appear with the same ID.
-	Returns:
-		0		- 	No Packet received, or a command recieved on the USB.
-		1		-	Packet recieved that passed CRC.
-*/
-int get_packet(Dexcom_packet* pPkt)
-{
-	//static uint32 last_cycle_time;
-	int delay;
-	//variable holding an index to each channel parameter set.  Set to the first channel.
-	int nChannel = 0;
-	delay = 32;
-	//last_cycle_time = getMs();
-	
-	// start channel is the channel we initially do our infinite wait on.
-	for(nChannel = start_channel; nChannel < NUM_CHANNELS; nChannel++)
-	{
-		// We only sit on each channel for 25ms.  This is long enough to get a packet (4ms)
-		// but not so long as prevent doServices() to process the USB port.
-		switch(WaitForPacket(delay, pPkt, nChannel))
-		{
-			case 1:			
-				// got a packet that passed CRC
-					return 1;
-			case 0:
-			// timed out
-				continue;
-			case -1:
-			{
-			// cancelled by inbound data on USB (command), or channel invalid.
-				return 0;
-			}
-		}
-	}
-	return 0;
-}
 
 // you can uncomment this if you want a glowing yellow LED when a terminal program is connected
 // to the USB.  I got sick of it.
 // LineStateChangeCallback - sets the yellow LED to the state of DTR on the USB, whenever it changes.
 void LineStateChangeCallback(uint8 state)
 {
-	//LED_YELLOW(state & ACM_CONTROL_LINE_DTR);
 	usb_connected = state & ACM_CONTROL_LINE_DTR;
 }
 
-//extern void basicUsbInit();
+void waitDoingServices (uint32 wait_time, volatile BIT break_flag, BIT bProtocolServices ) {
+	uint32 start_wait;
+	start_wait = getMs();
+	while ((getMs() - start_wait) < wait_time) {
+		doServices(bProtocolServices);
+		if(break_flag) return;
+		delayMs(20);
+	}
+}
 
+float random() {
+	return 	(float)randomNumber()/255.0;
+}
+uint16 calculateNextSample() {
+	float result = 0.0;
+	printf_fast("Calculating next sample\r\n");
+	result = powf((float)sample[1], flash_settings.alpha1);
+	result = result * powf((float)sample[0], flash_settings.alpha2);
+	result = result * powf((float)flash_settings.mean_raw_bg, (1-flash_settings.alpha1-flash_settings.alpha2));
+	result = result * expf(flash_settings.sigma_a*((random()+random()+random()+random()+random()+random()-3)/0.7));
+	sample[2]=sample[1];
+	sample[1]=sample[0];
+	sample[0]=(uint16)result;
+	printf_fast("n: %u, n-1: %u, n-2: %u", sample[0], sample[1], sample[2]);
+	return sample[0];
+	
+}
+
+void sendPacket(uint8 channel, Dexcom_packet * pkt) {
+	XDATA uint8 buffer[sizeof(Dexcom_packet)];
+	XDATA uint8 i;
+	swap_channel(nChannels[channel], fOffset[channel]);
+	memcpy(&buffer, &pkt, sizeof(pkt));
+	for(i = 0; i <= sizeof(Dexcom_packet); i++) {
+		while(radioComTxAvailable()==0){
+			radioComTxService();
+			doServices(1);
+		}
+		radioComTxSendByte(buffer[i]);
+	}	
+}
 
 void main()
 {   
+	Dexcom_packet Pkt;
+	//initialise the system
 	systemInit();
 	//initialise Anlogue Input 0
 	P0INP = 0x1;
@@ -1014,71 +740,77 @@ void main()
 	dma_Init();
 	usbComRequestLineStateChangeNotification(LineStateChangeCallback);
 	// we actually only use USB, so no point wasting power on UART
-	openUart();
 	init_command_buff(&command_buff);
 	
-
 	setRadioRegistersInitFunc(dex_RadioSettings);
 
-	radioQueueInit();
-    radioQueueAllowCrcErrors = 1;
+//	radioQueueInit();
+//    radioQueueAllowCrcErrors = 1;
+	//initialise the random number generator
+	randomSeedFromSerialNumber();
 	// these are reset in radioQueueInit and radioMacInit after our init func was already called
-	MCSM1 = 0;			// after RX go to idle, we don't transmit
+	memcpy(&flash_settings, (__xdata *)FLASH_SETTINGS, sizeof(flash_settings));
+	if(flash_settings.dex_tx_id == 0xFFFFFFFF) {
+		flash_settings.dex_tx_id = 1117317;  //serial number "12345"
+		flash_settings.alpha1 = -0.6493;
+		flash_settings.alpha2 = 1.6442;
+		flash_settings.sigma_a = 0.05;
+		flash_settings.mean_raw_bg = 103714+32000;
+		writeToFlash(FLASH_SETTINGS,sizeof(flash_settings));
+	}
+	waitDoingServices(30000,0,0);
+	printf_fast("Starting...\r\n");
+	//preload the sample array
+	sample[0]=flash_settings.mean_raw_bg;
+	sample[1]=flash_settings.mean_raw_bg;
+	sample[2]=flash_settings.mean_raw_bg;
+	printf_fast("Samples loaded with n: %u, n-1: %u, n-2: %u\r\n", sample[0], sample[1], sample[2]);
+	memset(&Pkt, 0, sizeof(Dexcom_packet));
 	while (1)
 	{
-		Dexcom_packet Pkt;
-		memset(&Pkt, 0, sizeof(Dexcom_packet));
-		// read the flash stored value of our TXID.
-		// we do this by reading the address we are interested in directly, cast as a pointer to the 
-		// correct data type.
-		dex_tx_id = *(uint32 XDATA *)FLASH_TX_ID;
-		if(dex_tx_id >= 0xFFFFFFFF) dex_tx_id = 0;
-		if(!get_packet(&Pkt))
-			continue;
-
-		// ok, we got a packet
-		print_packet(&Pkt);
-			
-		// can't safely sleep if we didn't get a packet!
-		if (do_sleep)
-		{
-			// not sure what this is about yet, but I believe it is saving state.
-		    uint8 savedPICTL = PICTL;
-			BIT savedP0IE = P0IE;
-
-			RFST = 4;   //SIDLE
-			// turn all wixel LEDs on
-			LED_RED(1);
-			LED_YELLOW(1);
-			LED_GREEN(1);
-			// wait 80 ms
-			delayMs(80);
-			// allow the wixel to complete any other tasks.
-			doServices(1);
-			// turn the wixel LEDS off
-			LED_RED(0);
-			LED_YELLOW(0);
-			LED_GREEN(0);
-			// sleep for aroud 300s
-			goToSleep(280);   //~295 s
-			// still trying to find out what this is about, but I believe it is restoring state.
-			PICTL = savedPICTL;
-			P0IE = savedP0IE;
-			// Enable suspend detection and disable any other weird features.
-			USBPOW = 1;
-			// Enable the USB common interrupts we care about: Reset, Resume, Suspend.
-			// Without this, we USBCIF.SUSPENDIF will not get set (the datasheet is incomplete).
-			USBCIE = 0b0111;
-
-			// bootstrap radio again
-			radioMacInit();
-			MCSM1 = 0;			// after RX go to idle, we don't transmit
-			radioMacStrobe();
-			
-			// watchdog mode??? this will do a reset?
-			//			WDCTL=0x0B;
-			// delayMs(50);    //wait for reset
+		uint8 i;
+		Pkt.raw = dex_num_encoder(calculateNextSample());
+		Pkt.filtered = dex_num_encoder(sample[2]/2);
+		Pkt.battery = 215;
+		Pkt.src_addr = flash_settings.dex_tx_id;
+		Pkt.dest_addr = 0xFFFF;
+		Pkt.unknown = 0;
+		Pkt.device_info = 3;
+		Pkt.port = 63;
+		Pkt.len = sizeof(Pkt);
+		if(Pkt.txId >=255)
+			Pkt.txId = 0;
+	/*
+typedef struct _Dexcom_packet
+{
+	uint8	len;
+	uint32	dest_addr;
+	uint32	src_addr;
+	uint8	port;
+	uint8	device_info;
+	uint8	txId;
+	uint16	raw;
+	uint16	filtered;
+	uint8	battery;
+	uint8	unknown;
+} Dexcom_packet;
+*/
+		printf_fast("about to send a packet\r\n");
+		for( i=0; i<4 ; i++) {
+			printf("Sending Packet at %lu ms: Length %u, Src %lu, Dst %lu, Raw %u, Filtered %u, Battery %u, Txid %u\r\n", 
+				getMs(), 
+				Pkt.len, 
+				Pkt.src_addr, 
+				Pkt.dest_addr, 
+				Pkt.raw, 
+				Pkt.filtered, 
+				Pkt.battery, Pkt.txId
+			); 
+			sendPacket(i, &Pkt);
+			waitDoingServices(500,0,0);
+			Pkt.txId++;
 		}
+		waitDoingServices(298000,0,0);
 	}
 }
 

@@ -91,7 +91,7 @@ elsewhere.  This small bridge rig should be kept nearby the T1D at all times.
 #include <uart1.h>
 
 //define the xBridge Version
-#define VERSION ("2.30")
+#define VERSION ("2.30a")
 //define the FLASH_TX_ID address.  This is the address we store the Dexcom TX ID number in.
 #define FLASH_TX_ID		(0x77F8)
 //define the DEXBRIDGE_FLAGS address.  This is the address we store the xBridge flags in.
@@ -258,8 +258,7 @@ void addMs(uint32 addendum)
 {
 	uint8 oldT4IE = T4IE;	// store state of timer 4 interrupt (active/inactive?)
 	T4IE = 0;				// disable timer 4 interrupt
-	timeMs += (addendum * 1000); 	// add addendum to timeMs
-	//time_since_pkt += addendum;
+	timeMs += addendum; 	// add addendum to timeMs
 	T4IE = oldT4IE;			// restore timer 4 interrupt to it's original state
 }
 
@@ -629,17 +628,20 @@ void switchToRCOSC(void)
 
 uint32 calcSleep(uint16 seconds) {
 	uint32 diff = 0;
-	uint32 now = 0;
+	XDATA uint32 now = 0;
 	diff = seconds;
-	//printf_fast("\r\ndiff: %lu\r\n", diff);
+//	printf_fast("\r\ndiff: %lu\r\n", diff);
 	diff = diff * 1000;
+	now = diff;
 	//printf_fast("\r\ndiff * 1000: %lu\r\n", diff);
 	diff = diff - (getMs() - pkt_time);
-	//printf_fast("\r\ndiff - getMs-pkt_time: %lu\r\n", diff);
-	diff = diff/1000;
-	while(diff>seconds)
-		diff-= 300;
-	//printf_fast("\r\ndiff/1000: %lu\r\n", diff);
+//	printf_fast("\r\ndiff - getMs-pkt_time: %lu\r\n", diff);
+//	diff = diff/1000;
+//	while(diff>seconds)
+//		diff-= 300;
+	while(diff > now)
+		diff = diff - now;
+//	printf_fast("\r\ndiff: %lu\r\n", diff);
 	return diff;
 }
 
@@ -647,6 +649,7 @@ void goToSleep (uint16 seconds) {
     unsigned char temp;
 	//uint16 sleep_time = 0;
 	unsigned short sleep_time = 0;
+	uint32 sleep_time_ms = 0;
 	XDATA uint32 addendum = 0;
 	//uint32 diff = 0;
 	//uint32 now = 0;
@@ -655,7 +658,8 @@ void goToSleep (uint16 seconds) {
 
     // The wixel docs note that any high output pins consume ~30uA
     makeAllOutputs(LOW);
-//	printf_fast("\r\nseconds: %u, sleep_time: %u, now-pkt_time: %lu\r\n", seconds, sleep_time, (getMs()-pkt_time));
+	//printf_fast("\r\nseconds: %u, sleep_time: %u, now-pkt_time: %lu\r\n", seconds, sleep_time, (getMs()-pkt_time));
+	//sleep_time_ms = calcSleep(seconds);
 	while(usb_connected && (usbComTxAvailable() < 128)) {
 		usbComService();
 	}
@@ -713,10 +717,10 @@ void goToSleep (uint16 seconds) {
 		IEN1 &= ~0x3F;
 		IEN2 &= ~0x3F;
 		
-		sleep_time = (unsigned short)calcSleep(seconds);
+		sleep_time_ms = calcSleep(seconds);
+		sleep_time = (unsigned short)(sleep_time_ms/1000);
 		//printf_fast("sleep_time: %u\r\n", sleep_time);
-		addMs(sleep_time);
-		pkt_time += sleep_time;
+		//pkt_time += sleep_time_ms;
 		if (sleep_time == 0 || sleep_time > seconds) {
 			printf_fast("too late to sleep, cancelling\r\n");
 			LED_YELLOW(1);
@@ -757,6 +761,7 @@ void goToSleep (uint16 seconds) {
 		// Switch back to high speed
 		boardClockInit();   
 		// add the time we were asleep to ms count
+		addMs(sleep_time_ms);
 
 	} else {
 		// set Sleep Timer to the lowest resolution (1 second)      
@@ -771,9 +776,10 @@ void goToSleep (uint16 seconds) {
 		temp = WORTIME0;
 		while(temp == WORTIME0); // Wait until a positive 32 kHz edge
 
-		sleep_time = (unsigned short)calcSleep(seconds);
-		addMs(sleep_time);
-		pkt_time += sleep_time;
+		sleep_time_ms = calcSleep(seconds);
+		sleep_time = (unsigned short)(sleep_time_ms/1000);
+		//printf_fast("sleep_time_ms: %lu, sleep_time: %u\r\n", sleep_time_ms, sleep_time);
+		//pkt_time += sleep_time_ms;
 		if (sleep_time == 0 || sleep_time > seconds) {
 			LED_YELLOW(1);
 			// Switch back to high speed
@@ -812,8 +818,10 @@ void goToSleep (uint16 seconds) {
 			// or external Port interrupt.
 			__asm nop __endasm;    
 		}
+		addMs(sleep_time_ms);
 	}
-	printf_fast("awake!  getMs is %lu\r\n", getMs());
+//	printf_fast("awake!  getMs is %lu\r\n", getMs());
+//	printf_fast("slept for %lu us, %u s \r\n", sleep_time_ms, sleep_time);
 	is_sleeping = 0;
 }
 
@@ -958,7 +966,7 @@ void configBt() {
 	length = sprintf(msg_buf,"AT+PWRM1");
 	send_data(msg_buf,length);
 	delayMs(1000);
-*/	length = sprintf(msg_buf, "AT+NAMExBridge%02x", serialNumber[1]);
+*/	length = sprintf(msg_buf, "AT+NAMExBridge%02x%02x", serialNumber[0],serialNumber[1]);
     send_data(msg_buf, length);
 	waitDoingServices(500,0,1);
 /*	length = sprintf(msg_buf, "AT+RELI1");
@@ -1022,14 +1030,15 @@ void print_packet(Dexcom_packet* pPkt)
 	msg.filtered = dex_num_decoder(pPkt->filtered)*2;
 	msg.dex_battery = pPkt->battery;
 	msg.my_battery = battery_capacity;
-	msg.dex_src_id = dex_tx_id;
+	//msg.dex_src_id = dex_tx_id;
+	msg.dex_src_id = pPkt->src_addr;
 	msg.size = sizeof(msg);
 	msg.function = DEXBRIDGE_PROTO_LEVEL; // basic functionality, data packet (with ack), TXID packet, beacon packet (also TXID ack).
 	send_data( (uint8 XDATA *)msg, msg.size);
 }
 
 //function to print the passed Dexom_packet as either binary or ascii.
-void printf_packet(Dexcom_packet* pPkt)
+/*void printf_packet(Dexcom_packet* pPkt)
 {
 	char *srcAddr;
 	//first normalise the pPkt-txId
@@ -1055,7 +1064,7 @@ void printf_packet(Dexcom_packet* pPkt)
 	*/
 		//print it comma separated.
 		//printf_fast("%s,%lu,%lu,%hhu,%hhi,%hhu\r\n",
-		printf_fast("len:%u, dest_addr:%lu, src_addr:%lu (%s), port:%u, device_info:%u, txId:%u, raw:%u (%lu), filtered:%u (%lu), battery:%u, RSSI:%i, LQI:%u\r\n",
+/*		printf_fast("len:%u, dest_addr:%lu, src_addr:%lu (%s), port:%u, device_info:%u, txId:%u, raw:%u (%lu), filtered:%u (%lu), battery:%u, RSSI:%i, LQI:%u\r\n",
 			pPkt->len,
 			pPkt->dest_addr,
 			pPkt->src_addr,
@@ -1075,7 +1084,7 @@ void printf_packet(Dexcom_packet* pPkt)
 	}
 	
 }
-
+*/
 //function to send a beacon with the TXID
 void sendBeacon()
 {
@@ -1310,7 +1319,7 @@ int WaitForPacket(uint32 milliseconds, Dexcom_packet* pkt, uint8 channel)
 	static uint8 lastpktxid = 64;
 	// a variable to use to convert the pkt-txId to something we can use.
 	uint8 txid = 0;
-	//printf_fast("waiting for packet on channel %u for %u from %lu \r", channel, milliseconds, start);
+	printf_fast("waiting for packet on channel %u for %lu \r\n", channel, milliseconds);
 	// safety first, make sure the channel is valid, and return with error if not.
 	if(channel >= NUM_CHANNELS)
 		return -1;
@@ -1398,6 +1407,7 @@ int WaitForPacket(uint32 milliseconds, Dexcom_packet* pkt, uint8 channel)
 */
 int get_packet(Dexcom_packet* pPkt)
 {
+	static BIT timed_out = 0;
 	//static uint32 last_cycle_time;
 	//uint32 now=0;
 	uint32 delay = 0;
@@ -1410,6 +1420,10 @@ int get_packet(Dexcom_packet* pPkt)
 		if(nChannel != start_channel) 
 		{
 			delay=500;
+		}
+		else if (timed_out && (nChannel == 0)) 
+		{
+			delay=298000;
 		}
 		else
 		{
@@ -1438,12 +1452,14 @@ int get_packet(Dexcom_packet* pPkt)
 			case 1:			
 				// got a packet that passed CRC
 					pkt_time = getMs();
+					timed_out = 0;
 					printf_fast("got a packet at %lu on channel %u\r\n", pkt_time, last_channel);
 					return 1;
 			case 0:
 				// timed out
 				//printf_fast("timed out\r");
 				//last_cycle_time=now;
+				timed_out = 1;
 				continue;
 			case -1:
 			{
@@ -1529,6 +1545,8 @@ void main()
 		battery_maximum = BATTERY_MAXIMUM;
 		save_settings = 1;
 	}
+	// measure the initial battery capacity.
+	battery_capacity = batteryPercent(adcRead(0 | ADC_REFERENCE_INTERNAL));
 	// we haven't sent a beacon packet yet, so say so.
 	sent_beacon = 0;
 	LED_GREEN(1);

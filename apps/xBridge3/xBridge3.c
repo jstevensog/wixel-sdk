@@ -1171,12 +1171,14 @@ void send_data( uint8 *msg, uint8 len)
 	}
 	while(uart1TxAvailable()<255) waitDoingServices(20,0,1);
 	if(usb_connected) {
+		printf_fast("Sending: ");
 		while(usbComTxAvailable() < len) {};
 		for(i=0; i < len; i++)
 		{
 			usbComTxSendByte(msg[i]);
 		}
 		while(usbComTxAvailable()<128) waitDoingServices(20,0,1);
+		printf_fast("\r\nResponse: ");
 	}
 }
 
@@ -1406,9 +1408,8 @@ void openUart()
 			settings.uart_baudrate=9600;
 		}
 	}
-	else {
-		uart1SetBaudRate(settings.uart_baudrate); // Set saved baudrate
-	}
+	uart1SetBaudRate(settings.uart_baudrate); // Set saved baudrate
+
 	init_command_buff(&command_buff);
 //	P1DIR |= 0x08; // RTS
 	//U1UCR &= ~0x4C;	//disable CTS/RTS on UART1, no Parity, 1 Stop Bit

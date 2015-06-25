@@ -1516,7 +1516,8 @@ int controlProtocolService()
 		else {
 			b = uart1RxReceiveByte();
 		}
-		putchar(b);
+		//putchar(b);
+		printf_fast("%c",b);
 		command_buff.commandBuffer[command_buff.nCurReadPos] = b;
 		command_buff.nCurReadPos++;
 		//printf_fast("%x\r\n", command_buff.commandBuffer[0]);

@@ -344,7 +344,11 @@ void radioQueueInit()
 // This is used to decide when to next transmit a queued data packet.
 static uint8 randomTxDelay()
 {
-    return 6 + (randomNumber() & 3);
+    //return 1 + (randomNumber() & 3);  //original radio_queue value drops a lot of packets ~= 1-4ms delay
+    //return 4 + (randomNumber() & 3);  //first try at lengthening.  Works really well.  ~= 4-7ms delay
+    //return 6 + (randomNumber() & 3);	//next try.  Drops around the same as 1.  ~= 6-9 ms delay
+    //return 5 + (randomNumber() & 3);	//next try.  Still not as good as 4, but way better than 6  ~= 5-8ms delay
+	return 3 + (randomNumber() & 3);	//next try. ~= 3-6ms delay
 }
 
 /* TX FUNCTIONS (called by higher-level code in main loop) ********************/
@@ -1775,8 +1779,8 @@ void main()
 	//MCSM0 &= 0x34;		// set manual calibration mode.
 	//MCSM0 = 0x04;
 	MCSM1 = 0x00;			// after RX go to idle, we don't transmit
-	MCSM2 = 0x08;
-	//MCSM2 = 0x17;
+	//MCSM2 = 0x08;
+	MCSM2 = 0x17;
 	// implement the USB line State Changed callback function.  
 	usbComRequestLineStateChangeNotification(LineStateChangeCallback);
 	//configure the P1_2 and P1_3 IO pins

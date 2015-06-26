@@ -1476,8 +1476,8 @@ int doCommand()
 			getFlag(DONT_IGNORE_BLE_STATE),
 			getFlag(XBRIDGE_HW));
 		printf_fast("battery_capacity: %u\r\n", battery_capacity);
-		printf_fast("MDMCFG4: %x, MDMCFG3: %x\r\n", MDMCFG4,MDMCFG3); 
-		printf_fast("PKTCTRL1: %x, PKTCTRL0: %x, PKTLEN: %x\r\n", PKTCTRL1, PKTCTRL0, PKTLEN);
+//		printf_fast("MDMCFG4: %x, MDMCFG3: %x\r\n", MDMCFG4,MDMCFG3); 
+//		printf_fast("PKTCTRL1: %x, PKTCTRL0: %x, PKTLEN: %x\r\n", PKTCTRL1, PKTCTRL0, PKTLEN);
 		printf_fast("current ms: %lu\r\n", getMs());
 	}
 	if(commandBuffIs("OK")) {
@@ -1776,11 +1776,10 @@ void main()
 	radioQueueInit();
 	// initialise the Radio Regisers
 	dex_RadioSettings();
-	//MCSM0 &= 0x34;		// set manual calibration mode.
-	//MCSM0 = 0x04;
+	MCSM0 &= 0x34;			// calibrate every fourth transition to and from IDLE.
 	MCSM1 = 0x00;			// after RX go to idle, we don't transmit
 	//MCSM2 = 0x08;
-	MCSM2 = 0x17;
+	MCSM2 = 0x17;			// terminate receiving on drop of carrier, but keep it up when packet quality is good.
 	// implement the USB line State Changed callback function.  
 	usbComRequestLineStateChangeNotification(LineStateChangeCallback);
 	//configure the P1_2 and P1_3 IO pins
@@ -1791,7 +1790,7 @@ void main()
 	P0INP = 0x1;
 	//delay for 30 seconds to get putty up.
 	waitDoingServices(10000,0,1);
-	printf_fast("Starting\r\nRetrieving Settings\r\n");
+	printf_fast("Starting xBridge v%s\r\nRetrieving Settings\r\n", VERSION);
 	memcpy(&settings, (__xdata *)FLASH_SETTINGS, sizeof(settings));
 	//detect if we have xBridge or classic hardware
 	

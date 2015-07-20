@@ -1253,7 +1253,7 @@ void configBt() {
 uint8 batteryPercent(uint16 val){
 	XDATA float pct = val;
 	// if val is >100 (ADC 0.217V) and < battery_minimum...
-	if((val < (settings.battery_minimum - 23)) && (val >100)) {
+	if((val < (settings.battery_minimum - 23)) && (val >settings.battery_minimum - 200)) {
 		//save the new minimum value with an offset of approx 1.2% (0.05V)
 		settings.battery_minimum = val;
 		save_settings = 1;

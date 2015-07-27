@@ -325,7 +325,8 @@ static volatile uint8 XDATA radioQueueTxPacket[TX_PACKET_COUNT][1 + RADIO_MAX_PA
 static volatile uint8 DATA radioQueueTxMainLoopIndex = 0;   // The index of the next txPacket to write to in the main loop.
 static volatile uint8 DATA radioQueueTxInterruptIndex = 0;  // The index of the current txPacket we are trying to send on the radio.
 
-BIT radioQueueAllowCrcErrors = 0;
+//BIT radioQueueAllowCrcErrors = 0;
+BIT radioQueueAllowCrcErrors = 1;
 
 /* GENERAL FUNCTIONS **********************************************************/
 
@@ -1198,6 +1199,7 @@ void bleConnectMonitor() {
 	if(!(getFlag(DONT_IGNORE_BLE_STATE)))
 	{
 		ble_connected = 1;
+		sent_beacon = 0;
 		return;
 	}
 	// if P1_2 is high, ble_connected is low, and the last_check was low, sav the time and set last_check.
@@ -1252,6 +1254,7 @@ void configBt() {
 // function to convert a voltage value to a battery percentage
 uint8 batteryPercent(uint16 val){
 	XDATA float pct = val;
+	printf_fast_f("batteryPercent val: %f\r\n", pct);
 	// if val is >100 (ADC 0.217V) and < battery_minimum...
 	if((val < (settings.battery_minimum - 23)) && (val >settings.battery_minimum - 200)) {
 		//save the new minimum value with an offset of approx 1.2% (0.05V)
@@ -1266,11 +1269,13 @@ uint8 batteryPercent(uint16 val){
 	}
 	// otherwise calculate the battery % and return.
 	pct = ((pct - settings.battery_minimum)/(settings.battery_maximum - settings.battery_minimum)) * 100;
-	//printf_fast("%i, %i, %i, %i\n", val, BATTERY_MINIMUM, BATTERY_MAXIMUM, (uint8)pct);
+	//printf_fast("batteryPercent, val:%i, min:%i, max:%i, pct:%i\r\n", val, settings.battery_minimum, settings.battery_maximum, (uint8)pct);
+	//printf_fast_f("batteryPercent val:%i, pct:%f\r\n", val,pct);
 	if (pct > 100)
-		return 100;
+		pct = 100.0;
 	if (pct < 0)
-		return 0;
+		pct = 0.0;
+	printf_fast_f("batteryPercent returning %f\r\n", pct);
 	return (uint8)pct;
 }
 
@@ -1842,6 +1847,7 @@ void main()
 	}
 	// measure the initial battery capacity.
 	battery_capacity = batteryPercent(adcRead(0 | ADC_REFERENCE_INTERNAL));
+	//printf_fast("%lu - battery_capacity: %u\r\n", battery_capacity);
 	// we haven't sent a beacon packet yet, so say so.
 	sent_beacon = 0;
 	LED_GREEN(1);
@@ -1995,6 +2001,7 @@ void main()
 			printf_fast("%lu - awake!\r\n", getMs());
 			// get the most recent battery capacity
 			battery_capacity = batteryPercent(adcRead(0 | ADC_REFERENCE_INTERNAL));
+			//printf_fast("%lu - battery_capacity: %u\r\n", battery_capacity);
 			init_command_buff(&command_buff);
 			// tell the radio to remain IDLE when the next packet is recieved.
 			MCSM1 = 0;			// after RX go to idle, we don't transmit

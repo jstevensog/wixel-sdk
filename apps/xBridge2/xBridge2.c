@@ -92,7 +92,7 @@ elsewhere.  This small bridge rig should be kept nearby the T1D at all times.
 #include <uart1.h>
 
 //define the xBridge Version
-#define VERSION ("2.32")
+#define VERSION ("2.33")
 //define the FLASH_TX_ID address.  This is the address we store the Dexcom TX ID number in.
 //#define FLASH_TX_ID		(0x77F8)
 //define the DEXBRIDGE_FLAGS address.  This is the address we store the xBridge flags in.
@@ -863,7 +863,8 @@ void sleepInit(void)
 ISR(ST, 1)
 {
    // Clear IRCON.STIF (Sleep Timer CPU interrupt flag)
-   IRCON &= 0x7F;
+   //IRCON &= 0x7F;
+   IRCON &= 0x3F;
    // Clear WORIRQ.EVENT0_FLAG (Sleep Timer peripheral interrupt flag)
    // This is required for the CC111xFx/CC251xFx only!
    WORIRQ &= 0xFE;

@@ -92,7 +92,7 @@ elsewhere.  This small bridge rig should be kept nearby the T1D at all times.
 #include <uart1.h>
 
 //define the xBridge Version
-#define VERSION ("2.33")
+#define VERSION ("2.35")
 //define the FLASH_TX_ID address.  This is the address we store the Dexcom TX ID number in.
 //#define FLASH_TX_ID		(0x77F8)
 //define the DEXBRIDGE_FLAGS address.  This is the address we store the xBridge flags in.
@@ -138,8 +138,9 @@ static volatile BIT ble_connected;		// bit indicating the BLE module is connecte
 static volatile BIT save_settings;		// flag to indicate that settings should be saved to flash.
 static volatile BIT got_packet;			// flag to indicate we have captured a packet.
 static volatile BIT got_ok;				// flag indicating we got OK from the HM-1x
-static volatile BIT no_leds;			// flag indicating we got OK from the HM-1x
-static volatile BIT send_debug;			// flag indicating we got OK from the HM-1x
+static volatile BIT no_leds;			// flag indicating to NOT show LEDs
+static volatile BIT send_debug;			// flag indicating to send debug output
+static volatile BIT sleep_ble;			// flag indicating to sleep the BLE module (power down in sleep)
 static volatile uint32 dly_ms = 0;
 static volatile uint32 pkt_time = 0;
 // these flags will be stored in Flash
@@ -852,9 +853,9 @@ void makeAllOutputs(BIT value)
 {
 	//we only make the P1_ports low, and not P1_2 or P1_3
     int i;
-    for (i=10;i < 17; i++)
+    for (i=11;i < 17; i++)
 	{
-		if( i == 10 && !(getFlag(SLEEP_BLE)))
+		if( i == 10 && !(sleep_ble))
 			continue;
 		setDigitalOutput(i, value);
     }
@@ -1513,6 +1514,15 @@ int doCommand()
 		else
 			printf_fast("debug output off\r\n");
 	}
+	if(command_buff.commandBuffer[0] == 0x42 || command_buff.commandBuffer[0] == 0x62) {
+		setFlag(SLEEP_BLE,!getFlag(SLEEP_BLE));
+		saveSettingsToFlash();
+		sleep_ble = getFlag(SLEEP_BLE);
+		if(sleep_ble)
+			printf_fast("BLE Sleeping on\r\n");
+		else
+			printf_fast("BLE Sleeping off\r\n");
+	}
 	if(commandBuffIs("OK")) {
 		got_ok = 1;
 		return(0);
@@ -1562,7 +1572,7 @@ int controlProtocolService()
 		// reset the command timeout.
 		cmd_to = getMs();
 		// if it is the end for the byte string, we need to process the command
-		if(command_buff.nCurReadPos == command_buff.commandBuffer[0] || (command_buff.nCurReadPos == 1 && ((command_buff.commandBuffer[0] & 0x5F) == 0x53 )) || (command_buff.nCurReadPos == 1 && ((command_buff.commandBuffer[0] & 0x5F) == 0x44 )) || (command_buff.nCurReadPos == 2 && command_buff.commandBuffer[0] == 0x4F))
+		if(command_buff.nCurReadPos == command_buff.commandBuffer[0] || (command_buff.nCurReadPos == 1 && ((command_buff.commandBuffer[0] & 0x5F) == 0x53 )) || (command_buff.nCurReadPos == 1 && ((command_buff.commandBuffer[0] & 0x5F) == 0x44 )) || (command_buff.nCurReadPos == 1 && ((command_buff.commandBuffer[0] & 0x5F) == 0x42 ))|| (command_buff.nCurReadPos == 2 && command_buff.commandBuffer[0] == 0x4F))
 		{
 			// ok we got the end of a command;
 			if(command_buff.nCurReadPos)
@@ -1875,6 +1885,8 @@ void main()
 			settings.battery_minimum = BATTERY_MINIMUM_CLASSIC;
 		}
 		save_settings = 1;
+		sleep_ble = getFlag(SLEEP_BLE);
+		send_debug = getFlag(SEND_DEBUG);
 	}
 	// measure the initial battery capacity.
 	battery_capacity = batteryPercent(adcRead(0 | ADC_REFERENCE_INTERNAL));
@@ -2013,8 +2025,12 @@ void main()
 			LED_YELLOW(0);
 			LED_GREEN(0);
 			// turn off the BLE module
-			setDigitalOutput(10,LOW);
-			ble_connected = 0;
+			if(sleep_ble){
+				if(send_debug)
+					printf_fast("turning off BLE\r\n");
+				setDigitalOutput(10,LOW);
+				ble_connected = 0;
+			}
 			// sleep for around 300s
 			if(send_debug)
 				printf_fast("%lu - sleeping for %u\r\n", getMs(), 300-wake_before_packet);

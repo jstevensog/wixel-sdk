@@ -102,7 +102,6 @@ static volatile BIT is_sleeping = 0;	// flag indicating we are sleeping.
 static volatile BIT usb_connected;		// indicates DTR set on USB.  Meaning a terminal program is connected via USB for debug.
 static volatile BIT sent_beacon;		// indicates if we have sent our current dex_tx_id to the app.
 static volatile BIT ble_sleeping;		// indicates if we have recieved a message from the BLE module that it is sleeping, or if false, it is awake.
-static volatile BIT ble_connected;		// bit indicating the BLE module is connected to the phone.  Prevents us from sending data without this.
 static volatile BIT got_packet;			// flag to indicate we have captured a packet.
 static volatile BIT got_ok;				// flag indicating we got OK from the HM-1x
 static volatile BIT no_leds;			// flag indicating we got OK from the HM-1x
@@ -883,7 +882,6 @@ void updateLeds()
 	} 
 	else 
 	{
-		LED_YELLOW(ble_connected);
 		LED_RED(radioQueueRxCurrentPacket());
 	}
 }
@@ -1290,8 +1288,6 @@ int get_packet(Dexcom_packet* pPkt)
 					return 1;
 			case 0:
 				// timed out
-				//printf_fast("timed out\r");
-				//last_cycle_time=now;
 				timed_out = 1;
 				continue;
 			case -1:
@@ -1302,9 +1298,6 @@ int get_packet(Dexcom_packet* pPkt)
 			}
 		}
 		delay = 600;
-		// if we have no dex_tx_id, sit on Channel 0
-		if(dex_tx_id == 0)
-			nChannel--;
 	}
 	//printf_fast("leaving getPacket\r\n");
 	return 0;
@@ -1352,7 +1345,7 @@ void main()
 	// we haven't sent a beacon packet yet, so say so.
 	sent_beacon = 0;
 	LED_GREEN(1);
-	// store the time we woke up.
+	dex_tx_id =0;
 	initialised = 1;
 		sendBeacon();
 	// MAIN LOOP
@@ -1362,29 +1355,20 @@ void main()
 	while (1)
 	{
 		Dexcom_packet Pkt;
-//		LED_RED(0);
-//		LED_GREEN(1);
+		LED_GREEN(1);
 		
 		if(get_packet(&Pkt) == 0) {
-			sendBeacon();
+			//sendBeacon();
 			continue;
 		}
 
-		LED_GREEN(0);
 		// ok, we got a packet
 		// when we send a packet, we wait until we get an ACK to put us to sleep.
 		// we only wait a maximum of two minutes
 		LED_RED(0);
 		while (!do_sleep){
-			while(!ble_connected && (getMs() - pkt_time)<120000) {
-				waitDoingServices(1000, ble_connected,0);
-			}
-			if(ble_connected) {
-				// send the data packet
-				print_packet(&Pkt);
-			} else {
-				do_sleep = 1;
-			}
+			// send the data packet
+			print_packet(&Pkt);
 			// wait 10 seconds, listenting for the ACK.
 			waitDoingServices(10000, 0, 1);
 			
@@ -1397,7 +1381,7 @@ void main()
 		}
 			
 		// can't safely sleep if we didn't get an ACK, or if we are already sleeping!
-		if (do_sleep && !is_sleeping  && dex_tx_id != 0)
+		if (do_sleep && !is_sleeping  && dex_tx_id > 0)
 		{
 			// save all Port Interrupts state (enabled/disabled).
 		    uint8 savedPICTL = PICTL;
@@ -1409,6 +1393,9 @@ void main()
 			uint8 savedP1SEL = P1SEL;
 			uint8 savedP1DIR = P1DIR;
 			//printf_fast("%lu - going to sleep\r\n", getMs());
+			//set some LEDs so we know we are going to sleep.
+			LED_GREEN(0);
+			LED_RED(1);
 			// clear sent_beacon so we send it next time we wake up.
 			sent_beacon = 0;
 			// turn of the RF Frequency Synthesiser.
@@ -1431,7 +1418,6 @@ void main()
 			LED_GREEN(0);
 			// turn off the BLE module
 			setDigitalOutput(10,LOW);
-			ble_connected = 0;
 			// sleep for around 300s
 			radioMacSleep();
 			goToSleep(300-wake_before_packet);   //
@@ -1462,6 +1448,9 @@ void main()
 			// clear do_sleep, cause we have just woken up.
 			do_sleep = 0;
 			waitDoingServices(250,0,1);
+		}
+		else {
+			do_sleep = 0;
 		}
 	}
 }

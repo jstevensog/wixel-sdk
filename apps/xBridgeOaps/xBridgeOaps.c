@@ -944,13 +944,23 @@ void send_data( uint8 *msg, uint8 len)
 {
 	uint8 i = 0;
 	//wait until uart1 Tx Buffer is empty
+	while(uart1TxAvailable() < len) {};
+	for(i=0; i < len; i++)
+	{
+		uart1TxSendByte(msg[i]);
+	}
+	while(uart1TxAvailable()<255) waitDoingServices(20,0,1);
 	if(usb_connected) {
+		if(send_debug)
+			printf_fast("Sending: ");
 		while(usbComTxAvailable() < len) {};
 		for(i=0; i < len; i++)
 		{
 			usbComTxSendByte(msg[i]);
 		}
 		while(usbComTxAvailable()<128) waitDoingServices(20,0,1);
+		if(send_debug)
+			printf_fast("\r\nResponse: ");
 	}
 }
 
@@ -1013,6 +1023,20 @@ uint8 init_command_buff(t_command_buff* pCmd)
 	memset(pCmd->commandBuffer, 0, USB_COMMAND_MAXLEN);
 	pCmd->nCurReadPos = 0;
 	return 0;
+}
+
+//Open the UART and set 9600,n,1 parameters.
+void openUart()
+{
+    uart1Init();
+	uart1SetParity(0);
+	uart1SetStopBits(1);
+	uartEnable();
+	uart1SetBaudRate(9600); // Set saved baudrate
+
+	init_command_buff(&command_buff);
+//	P1DIR |= 0x08; // RTS
+	//U1UCR &= ~0x4C;	//disable CTS/RTS on UART1, no Parity, 1 Stop Bit
 }
 
 
@@ -1312,6 +1336,7 @@ void LineStateChangeCallback(uint8 state)
 	usb_connected = state & ACM_CONTROL_LINE_DTR;
 }
 
+
 void main()
 {   
 	uint8 i = 0;
@@ -1332,10 +1357,10 @@ void main()
 	MCSM2 = 0x17;			// terminate receiving on drop of carrier, but keep it up when packet quality is good.
 	// implement the USB line State Changed callback function.  
 	usbComRequestLineStateChangeNotification(LineStateChangeCallback);
+	// Open the UART and set it up for comms to HM-10
+	openUart();
 	//configure the P1_2 and P1_3 IO pins
-	//makeAllOutputs(LOW);
-	setPort1PullType(LOW);
-	setDigitalInput(12,PULLED);
+	makeAllOutputs(LOW);
 	//initialise Anlogue Input 0
 	P0INP = 0x1;
 	//wait 1 seconds, just in case it needs to settle.
@@ -1423,6 +1448,8 @@ void main()
 			goToSleep(300-wake_before_packet);   //
 			got_packet = 0;
 			radioMacResume();
+			//reset UART
+			openUart();
 			//WDCTL=0x0B;
 			// still trying to find out what this is about, but I believe it is restoring state.
 			// restore all Port Interrupts we had prior to going to sleep. 
@@ -1452,5 +1479,7 @@ void main()
 		else {
 			do_sleep = 0;
 		}
+		sendBeacon();
+
 	}
 }

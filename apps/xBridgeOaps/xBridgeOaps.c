@@ -1,4 +1,4 @@
-/** xBridge2:
+/** xBridgeOaps:
 All thanks to Adrien de Croy, who created dexterity-wixel and modified the
 wixel-sdk, upon which xBridge2 is based.  Without his efforts in this and decoding the
 Dexcom protocol, this would not have been possible. 
@@ -16,24 +16,20 @@ It could likely also be modified to work with any CGM transmitter.
 == Description ==
 A program to allow a wixel to capture packets from a Dexcom G4 Platinum 
 Continuous Glucose Monitor transmitter and send them in binary form
-out of the UART1 port, and USB port if it is connected.
+out of the UUSB port if it is connected.
 
-Note that debug messages are sent out the USB port only.
-
-It also accepts various protocol packets on either the UART1 or USB ports, one of
+It also accepts various protocol packets on the USB port, one of
 which allows you to see or set the Dexcom Transmitter ID in the form of an encoded
-long int (ie 63GEA).  It will NOT display packets
-unless TXID is set.  Your application will need to accept a "beacon" packet from the
-wixel, sent on both USB and UART0, and if the TXID value is zero, set it before the wixel
-will send Dexcom packets from the specified Transmitter.
+long int (ie 63GEA).  It will display all Dexcom G4 packets it finds if the
+TXID is set to 0.  Your application will need to accept a "beacon" packet from the
+wixel, sent on the USB port, and if the TXID value is zero, set it to a valid int before the wixel
+will only capture Dexcom packets from the specified Transmitter.
 
 
 The app uses the radio_queue libray to receive packets.  It does not
 transmit any packets.
 
-The input to this app is mostly on thw radio reciever.  It also accepts an anlogue input on pin P0_0 (referenced to ground)
-connected to any rechargeable battery being used to power the wixel, HM-10/11 etc.
-
+The input to this app is mostly on thw radio reciever.
 The output from this app takes the following format:
 
 The red LED indicates activity on the radio channel (packets being received).
@@ -66,10 +62,7 @@ Beacon Packet - Bridge to App.  Sends the TXID it is filtering on to the app, so
 	0xF1	- Packet type (F1 means Beacon or TXID acknowledge)
 	uint32	- Dexcom encoded TXID.
 	
-Note:  The protocol can be expanded simply by adding other packet types.  I envision that a vibration module could
-be added, with a wixel output to drive it, so that the wixel will cause a vibration when the phone app sends a command.
-This would act as a backup to the phone alerts, and perhaps smart watch alerts, in case a T1D has left his phone/watch
-elsewhere.  This small bridge rig should be kept nearby the T1D at all times.
+Note:  The protocol can be expanded simply by adding other packet types.
 */
 
 /** Dependencies **************************************************************/
@@ -92,36 +85,13 @@ elsewhere.  This small bridge rig should be kept nearby the T1D at all times.
 #include <uart1.h>
 
 //define the xBridge Version
-#define VERSION ("2.35")
-//define the FLASH_TX_ID address.  This is the address we store the Dexcom TX ID number in.
-//#define FLASH_TX_ID		(0x77F8)
-//define the DEXBRIDGE_FLAGS address.  This is the address we store the xBridge flags in.
-//#define DEXBRIDGE_FLAGS	(FLASH_TX_ID-2)
-//define the FLASH_BATTERY_MAX address.  This is the address we store the battery_maximum value in flash.
-//#define FLASH_BATTERY_MAX (DEXBRIDGE_FLAGS-2)
-//define the FLASH_BATTERY_MIN address.  This is the address we store the battery_maximum value in flash.
-//#define FLASH_BATTERY_MIN (FLASH_BATTERY_MAX-2)
+#define VERSION ("0.1")
 //define the maximum command string length for USB commands.
 #define USB_COMMAND_MAXLEN	(32)
 //defines the number of channels we will scan.
 #define NUM_CHANNELS		(4)
 //define the start channel
 #define START_CHANNEL		(0)
-//defines battery minimum and maximum voltage values for converting to percentage.
-/* To calculate the value for a specific voltage, use the following formula
-	val = (((voltage/RH+RL)*RL)/1.25)*2047
-where:
-	val is the value to enter into one of the limits.  Rounded to the nearest Integer.
-	voltage is the voltage you want the value for.
-	RH is the Larger resistor value in the voltage divider circuit (VIN to P0_0)
-	RL is the lower resistor value in the voltage divider circuit (P0_0 to Ground)
-*/
-// assuming that there is a 27k ohm resistor between VIN and P0_0, and a 10k ohm resistor between P0_0 and GND, as per xBridge circuit diagrams
-#define BATTERY_MAXIMUM		(1814) //4.1V
-#define BATTERY_MINIMUM		(1416) //3.2V
-//If using Chris Bothelo's bridge circuit, the code will automatically use these values instead.
-#define BATTERY_MAXIMUM_CLASSIC (2034)
-#define BATTERY_MINIMUM_CLASSIC (1587)
 // defines the xBridge protocol functional level.  Sent in each packet as the last byte.
 #define DEXBRIDGE_PROTO_LEVEL (0x01)
 //define the Packet Receive Timeout on each channel in ms
@@ -131,19 +101,13 @@ static volatile BIT do_sleep = 0;		// indicates we should go to sleep between pa
 static volatile BIT is_sleeping = 0;	// flag indicating we are sleeping.
 static volatile BIT usb_connected;		// indicates DTR set on USB.  Meaning a terminal program is connected via USB for debug.
 static volatile BIT sent_beacon;		// indicates if we have sent our current dex_tx_id to the app.
-static volatile BIT writing_flash;		// indicates if we are writing to flash.
 static volatile BIT ble_sleeping;		// indicates if we have recieved a message from the BLE module that it is sleeping, or if false, it is awake.
-static volatile BIT dex_tx_id_set;		// indicates if the Dexcom Transmitter id (settings.dex_tx_id) has been set.  Set in doServices.
-static volatile BIT ble_connected;		// bit indicating the BLE module is connected to the phone.  Prevents us from sending data without this.
-static volatile BIT save_settings;		// flag to indicate that settings should be saved to flash.
 static volatile BIT got_packet;			// flag to indicate we have captured a packet.
 static volatile BIT got_ok;				// flag indicating we got OK from the HM-1x
-static volatile BIT no_leds;			// flag indicating to NOT show LEDs
-static volatile BIT send_debug;			// flag indicating to send debug output
-static volatile BIT sleep_ble;			// flag indicating to sleep the BLE module (power down in sleep)
+static volatile BIT no_leds;			// flag indicating we got OK from the HM-1x
+static volatile BIT send_debug;			// flag indicating we got OK from the HM-1x
 static volatile uint32 dly_ms = 0;
 static volatile uint32 pkt_time = 0;
-// these flags will be stored in Flash
 static volatile BIT initialised;					// flag to indicate we have passed the initialisation.
 static uint8 sleep_mode = 0;
 static uint8 save_IEN0;
@@ -151,9 +115,7 @@ static uint8 save_IEN1;
 static uint8 save_IEN2;
 
 
-XDATA uint8 battery_capacity=0;
-XDATA uint32 last_beacon=0;
-XDATA uint32 last_battery=0;
+XDATA uint32 dex_tx_id=0;
 XDATA static volatile uint8 channel = 0;	//current radio channel
 XDATA uint8 last_channel = 0; // last channel we captured a packet on
 // _Dexcom_packet - Type Definition of a Dexcom Radio packet
@@ -179,28 +141,6 @@ XDATA Dexcom_packet * Pkt;
 
 XDATA uint8 currentPacket[sizeof(Dexcom_packet)];
 
-// _xBridge_settings - Type definition for storage of xBridge_settings
-typedef struct _xBridge_settings
-{
-	uint32 dex_tx_id; 		//4 bytes
-	uint16 battery_maximum;	//2 bytes
-	uint16 battery_minimum;	//2 bytes
-	uint16 flags;			//2 bytes
-	uint32 uart_baudrate;	//4 bytes
-} xBridge_settings;			//14 bytes total
-XDATA xBridge_settings settings;
-
-#define FLASH_SETTINGS 			(0x77E0)
-#define BLE_INITIALISED			(0x0001)
-#define SLEEP_BLE				(0x0002)
-#define DONT_IGNORE_BLE_STATE	(0x0004)
-#define XBRIDGE_HW				(0x0008)
-#define NO_LEDS					(0x0010)
-#define SEND_DEBUG				(0x0020)
-// next flag will be 0x0040
-
-// array of HM-1x baudrates for rate detection.
-XDATA uint32 uart_baudrate[9] = {9600,19200,38400,57600,115200,4800,2400,1200,230400};
 
 //structure of a USB command
 typedef struct _command_buff
@@ -211,31 +151,6 @@ typedef struct _command_buff
 
 //create a static command structure to use.
 static t_command_buff command_buff;
-
-void setFlag(uint8 ptr, uint8 val)
-{
-	if(val)
-	{
-		settings.flags |= ptr;
-	}
-	else
-	{
-		settings.flags &= ~ptr;
-	}
-}
-
-unsigned char getFlag(uint8 ptr)
-{
-	return settings.flags & ptr ? 1 : 0;
-}
-
-// Dexcom Transmitter Source Address to match against.
-//XDATA uint32 dex_tx_id; 
-// xBridge flags.  Currently only the following flags are used:
-//	0	-	BLE name initialised. 1= not initialised, 0= initialised.
-//XDATA uint16 xBridge_flags;
-//XDATA uint16 battery_maximum = BATTERY_MAXIMUM;
-//XDATA uint16 battery_minimum = BATTERY_MINIMUM;
 
 // message  buffer for communicating with the BLE module
 XDATA uint8 msg_buf[82];
@@ -260,30 +175,6 @@ void sendBeacon(void);
 // frequency offsets for each channel - seed to 0.
 static uint8 fOffset[NUM_CHANNELS] = {0xCE,0xD5,0xE6,0xE5};
 static uint8 nChannels[NUM_CHANNELS] = { 0, 100, 199, 209 };
-
-
-// writeBuffer holds the data from the computer that we want to write in to flash.
-XDATA uint8 writeBuffer[sizeof(settings)];
-
-// flashWriteDmaConfig holds the configuration of DMA channel 0, which we use to
-// transfer the data from writeBuffer in to flash.
-XDATA DMA_CONFIG flashWriteDmaConfig;
-
-
-
-// startFlashWrite is a small piece of code we store in RAM which initiates the flash write.
-// According to datasheet section 12.3.2.1, this code needs to be 2-aligned if it is executed
-// from flash. SDCC does not have a good way of 2-aligning code, so we choose to put the code in
-// RAM instead of flash.
-XDATA uint8 startFlashWrite[] = {
-	0x75, 0xAE, 0x02,  // mov _FCTL, #2 :   Sets FCTRL.WRITE bit to 1, initiating a write to flash.
-	0x22               // ret           :   Returns to the calling function.
-};
-/* dma_init:  	A function to initialise the DMA channel for use in erasing and storing data in flash.
-Parameters:		none.
-Returns :		void.
-Uses :			writeBuffer - A global variable we can address as the write buffer for writing data.
-*/
 
 /* radio queue functions and defines.  Replaces radio_queue library
 Note:  These functions are taken directly from the radio_queue source code, and modified to remove the transmit functions.
@@ -574,93 +465,6 @@ void delayMs(uint16 milliseconds)
 
 /* end time functions ***********************************************************/
 
-/* Flash memory functions and variables.
-All of these are to do with erasing and writing data into Flash memory.  Used to 
-store the settings of xBridge.
-*/
- void dma_Init(){
-	// Configure the flash write timer.  See section 12.3.5 of the datasheet.
-	FWT = 32;
-
-	// Set up the DMA configuration block we use for writing to flash (See Figure 21 of the datasheet).
-	// LENL and LENH are sent later when we know how much data to write.
-	flashWriteDmaConfig.SRCADDRH = (unsigned short)&writeBuffer >> 8;
-	flashWriteDmaConfig.SRCADDRL = (unsigned char)&writeBuffer;
-	flashWriteDmaConfig.DESTADDRH = XDATA_SFR_ADDRESS(FWDATA) >> 8;
-	flashWriteDmaConfig.DESTADDRL = XDATA_SFR_ADDRESS(FWDATA);
-
-	// WORDSIZE = 0     : byte
-	// TMODE = 0        : single mode
-	// TRIG = 0d18      : flash
-	flashWriteDmaConfig.DC6 = 18;
-
-	// SRCINC = 01      : yes
-	// DESTINC = 00     : no
-	// IRQMASK = 0      : no   *datasheet said this bit should be 1
-	// M8 = 0           : 8-bit transfer
-	// PRIORITY = 0b10  : high
-	flashWriteDmaConfig.DC7 = 0b01000010;
-
-	DMA0CFG = (uint16)&flashWriteDmaConfig;
-}
-/* eraseFlash:	A function to erase a page of flash.
-Note:  This erases a full page of flash, not just the data at the address you specify.
-		It works out which page the address you speicfy is in, and erases that page.
-		Flash MUST be erased (set every bit in every byte of the flasn page to 1) before
-		you can change the data by writing to it.
-Parameters:
-	uint16	address		Address of the data that you want erased.  Read the note above.
-Returns:	void
-Uses:	The DMA channel initialised previously.
-*/
-void eraseFlash(uint16 address)
-{
-	// first erase the page
-    FADDRH  = address >> 9;	// high byte of address / 2
-    FADDRL =0;
-    FCTL = 1;				// Set FCTL.ERASE to 1 to initiate the erasing.
-    __asm nop __endasm;		// Datasheet says a NOP is necessary after the instruction that initiates the erase.
-    __asm nop __endasm;		// We have extra NOPs to be safe.
-    __asm nop __endasm;
-    __asm nop __endasm;
-    while(FCTL & 0x80){};	// Wait for erasing to be complete.
-}
-
-/* writeToFlash:	A function to write a value into flash.
-Note:  This writes writebuffer to the specified flash address.
-Parameters:
-	uint16	address		Address of the data that you want erased.  Read the note above.
-	uint16	length		The length of the data to write.  Basically the amount of data in writeBuffer.
-Returns:	void
-Uses:	The DMA channel initialised previously.
-	global writeBuffer	Stores the data to be written to flash.
-*/
-void writeToFlash(uint16 address, uint16 length)
-{
-	FADDR = address >> 1;	// not sure if i need to do this again.
-	flashWriteDmaConfig.VLEN_LENH = length >> 8;
-	flashWriteDmaConfig.LENL = length;
-	DMAIRQ &= ~(1<<0);		// Clear DMAIF0 so we can poll it to see when the transfer finishes.
-	DMAARM |= (1<<0);
-	__asm lcall _startFlashWrite __endasm;
-	while(!(DMAIRQ & (1<<0))){}	// wait for the transfer to finish by polling DMAIF0
-	while(FCTL & 0xC0){}		// wait for last word to finish writing by polling BUSY and SWBUSY
-}
-
-// Function to save all settings to flash
-void saveSettingsToFlash()
-{
-		writing_flash=1;
-		memcpy(&writeBuffer, &settings, sizeof(settings));
-		eraseFlash(FLASH_SETTINGS);
-		writeToFlash(FLASH_SETTINGS, sizeof(settings));
-		writing_flash=0;
-		save_settings=0;
-		if(send_debug)
-			printf_fast("settings saved to flash\r\n");
-} 
-
-
 // store RF config in FLASH, and retrieve it from here to put it in proper location (also incidentally in flash).
 // this allows persistent storage of RF params that will survive a restart of the wixel (although not a reload of wixel app obviously).
 // TO-DO get this working with DMA - need to erase memory block first, then write this to it.
@@ -672,13 +476,6 @@ void LoadRFParam(unsigned char XDATA* addr, uint8 default_val)
 		*addr = default_val; 
 }
 
-
-/*
-void uartDisable() {
-    U1UCR &= ~0x40; //Hardware Flow Control (CTS/RTS) Off.  We always want it off.
-//    U1CSR &= ~0x40; // Recevier disable.
-}
-*/
 
 void dex_RadioSettings()
 {
@@ -790,22 +587,6 @@ uint8 min8(uint8 a, uint8 b)
 }
 
 
-/*
-// getPacketRSSI - returns the RSSI value from the Dexcom_packet passed to it.
-int8 getPacketRSSI(Dexcom_packet* p)
-{
-	// RSSI_OFFSET for 489 kbaud is closer to 73 than 71
-	return (p->RSSI/2)-73;
-}
-
-
-//getPacketPassedChecksum - returns the checksum of the Dexcom_packet passed to it.
-uint8 getPacketPassedChecksum(Dexcom_packet* p)
-{
-	//take the LQI value from the packet, AND with 0x80.  If it equals 0x80, then return 1, otherwise return 0.
-	return ((p->LQI & 0x80)==0x80) ? 1:0;
-}
-*/
 //format an array to decode the dexcom transmitter name from a Dexcom packet source address.
 XDATA char SrcNameTable[32] = { '0', '1', '2', '3', '4', '5', '6', '7',
 						  '8', '9', 'A', 'B', 'C', 'D', 'E', 'F',
@@ -844,8 +625,6 @@ void waitDoingServices (uint32 wait_time, volatile BIT break_flag, BIT bProtocol
 }
 
 
-
-
 /** Functions *****************************************************************/
 /* the functions that puts the system to sleep (PM2) and configures sleep timer to
 wake it again in 250 seconds.*/
@@ -853,9 +632,9 @@ void makeAllOutputs(BIT value)
 {
 	//we only make the P1_ports low, and not P1_2 or P1_3
     int i;
-    for (i=11;i < 17; i++)
+    for (i=10;i < 17; i++)
 	{
-		if( i == 10 && !(sleep_ble))
+		if( i == 10 )
 			continue;
 		setDigitalOutput(i, value);
     }
@@ -892,8 +671,6 @@ void switchToRCOSC(void)
    // Power down [HS XOSC] (SLEEP.OSC_PD = 1)
    SLEEP |= 0x04;
 }
-
-
 
 
 uint32 calcSleep(uint16 seconds) {
@@ -992,8 +769,6 @@ void goToSleep (uint16 seconds) {
 		//printf_fast("sleep_time: %u\r\n", sleep_time);
 		//pkt_time += sleep_time_ms;
 		if (sleep_time == 0 || sleep_time > seconds) {
-			if(send_debug)
-				printf_fast("too late to sleep, cancelling\r\n");
 			LED_YELLOW(1);
 			// Switch back to high speed
 			boardClockInit();   
@@ -1107,15 +882,7 @@ void updateLeds()
 	} 
 	else 
 	{
-		LED_YELLOW(ble_connected);
-		if(dex_tx_id_set)
-		{
-			LED_RED(radioQueueRxCurrentPacket());
-		} 
-		else 
-		{
-			LED_RED((getMs() & 0x0000FF00) == 0x1300);
-		}
+		LED_RED(radioQueueRxCurrentPacket());
 	}
 }
 
@@ -1198,99 +965,6 @@ void send_data( uint8 *msg, uint8 len)
 }
 
 
-// function called by doServices to monitor the state of the BLE connection
-void bleConnectMonitor() {
-	//to store the time we went high
-	static uint32 timer;
-	//to store P1_2 the last time we looked.
-	static BIT last_check;
-	if(!initialised)
-		return;
-	if(!(getFlag(DONT_IGNORE_BLE_STATE)))
-	{
-		ble_connected = 1;
-		sent_beacon = 0;
-		return;
-	}
-	// if P1_2 is high, ble_connected is low, and the last_check was low, sav the time and set last_check.
-	if (P1_2 && !ble_connected && !last_check) {
-		timer=getMs();
-		last_check = 1;
-	// otherwise if P1_2 goes low, and ble_connected is high, we cancel everything.
-	} else if (!P1_2) {
-		ble_connected =0;
-		last_check = 0;
-		ble_connected = 0;
-	//otherwise, if P1_2 has been high for more than 550ms, we can safely assume we have ble_connected, so say so.
-	} else if (P1_2 && last_check && ((getMs() - timer)>550)) {
-		ble_connected = 1;
-		sent_beacon = 0;
-	}
-}
-// Send a pulse to the BlueTooth module SYS input
-/*void breakBt() {
-	//pulse P1_2 high
-	setDigitalOutput(12,HIGH);
-	LED_RED(1);
-	delayMs(200);
-	//send P1_2 low
-	setDigitalOutput(12,LOW);
-}*/
-
-// Configure the BlueTooth module with a name.
-void configBt() {
-	XDATA uint8 length;
-	//uartEnable();
-//	breakBt();
-/*	length = sprintf(msg_buf,"AT+RENEW");
-	send_data(msg_buf,length);
-	delayMs(5000);
-	length = sprintf(msg_buf,"AT+PWRM1");
-	send_data(msg_buf,length);
-	delayMs(1000);
-*/	length = sprintf(msg_buf, "AT+NAMExBridge%02x%02x", serialNumber[0],serialNumber[1]);
-    send_data(msg_buf, length);
-	waitDoingServices(500,0,1);
-/*	length = sprintf(msg_buf, "AT+RELI1");
-    send_data(msg_buf, length);
-	waitDoingServices(500,0,1);	
-*/	length = sprintf(msg_buf,"AT+RESET");
-	send_data(msg_buf,length);
-	waitDoingServices(5000,0,1);
-    //uartDisable();
-}
-
-
-// function to convert a voltage value to a battery percentage
-uint8 batteryPercent(uint16 val){
-	XDATA float pct = val;
-	if(send_debug)
-		printf_fast_f("batteryPercent val: %f\r\n", pct);
-	// if val is >100 (ADC 0.217V) and < battery_minimum...
-	if((val < (settings.battery_minimum - 23)) && (val >settings.battery_minimum - 200)) {
-		//save the new minimum value with an offset of approx 1.2% (0.05V)
-		settings.battery_minimum = val;
-		save_settings = 1;
-	}
-	// if val is <2047 (ADC maximum 1.2V) and > battery_maximum....
-	if((val > (settings.battery_maximum + 23)) && (val < 2047)) {
-		//save the new maximum value with an offset of approx 1.2% (0.05V)
-		settings.battery_maximum = val;
-		save_settings = 1;;
-	}
-	// otherwise calculate the battery % and return.
-	pct = ((pct - settings.battery_minimum)/(settings.battery_maximum - settings.battery_minimum)) * 100;
-	//printf_fast("batteryPercent, val:%i, min:%i, max:%i, pct:%i\r\n", val, settings.battery_minimum, settings.battery_maximum, (uint8)pct);
-	//printf_fast_f("batteryPercent val:%i, pct:%f\r\n", val,pct);
-	if (pct > 100)
-		pct = 100.0;
-	if (pct < 0)
-		pct = 0.0;
-	if(send_debug)
-		printf_fast_f("batteryPercent returning %f\r\n", pct);
-	return (uint8)pct;
-}
-
 // structure of a raw record we will send.
 typedef struct _RawRecord
 {
@@ -1316,7 +990,7 @@ void print_packet(Dexcom_packet* pPkt)
 	msg.raw = dex_num_decoder(pPkt->raw);
 	msg.filtered = dex_num_decoder(pPkt->filtered)*2;
 	msg.dex_battery = pPkt->battery;
-	msg.my_battery = battery_capacity;
+	msg.my_battery = 0;
 	//msg.dex_src_id = dex_tx_id;
 	msg.dex_src_id = pPkt->src_addr;
 	msg.size = sizeof(msg);
@@ -1324,70 +998,18 @@ void print_packet(Dexcom_packet* pPkt)
 	send_data( (uint8 XDATA *)msg, msg.size);
 }
 
-//function to print the passed Dexom_packet as either binary or ascii.
-/*void printf_packet(Dexcom_packet* pPkt)
-{
-	char *srcAddr;
-	//first normalise the pPkt-txId
-	//uint8 txid = (pPkt->txId & 0xFC) >> 2;
-
-	//Next, convert the pPkt->src_addr to a string and store it in the global srcAddr array for printing.
-	if(usb_connected) {
-		srcAddr = dexcom_src_to_ascii(pPkt->src_addr);
-	*/
-	/*
-	uint8	len;
-	uint32	dest_addr;
-	uint32	src_addr;
-	uint8	port;
-	uint8	device_info;
-	uint8	txId;
-	uint16	raw;
-	uint16	filtered;
-	uint8	battery;
-	uint8	unknown;
-	uint8	checksum;
-	int8	RSSI;
-	uint8	LQI;
-	*/
-		//print it comma separated.
-		//printf_fast("%s,%lu,%lu,%hhu,%hhi,%hhu\r\n",
-/*		printf_fast("len:%u, dest_addr:%lu, src_addr:%lu (%s), port:%u, device_info:%u, txId:%u, raw:%u (%lu), filtered:%u (%lu), battery:%u, RSSI:%i, LQI:%u\r\n",
-			pPkt->len,
-			pPkt->dest_addr,
-			pPkt->src_addr,
-			srcAddr,
-			pPkt->port,
-			pPkt->device_info,
-			pPkt->txId,
-			pPkt->raw,
-			dex_num_decoder(pPkt->raw),
-			pPkt->filtered,
-			2 * dex_num_decoder(pPkt->filtered),
-			pPkt->battery,
-			pPkt->RSSI,
-			pPkt->LQI);
-			
-			//txid);r	
-	}
-	
-}
-*/
 //function to send a beacon with the TXID
 void sendBeacon()
 {
 	//char array to store the response in.
 	uint8 XDATA cmd_response[7];
-	//return if we don't have a connection or if we have already sent a beacon
-	if(send_debug)
-		printf_fast("sending beacon Now\r\n");
 	//prepare the response
 	//responding with number of bytes,
 	cmd_response[0] = sizeof(cmd_response);
 	//responding to command 01,
 	cmd_response[1] = 0xF1;
 	//return the encoded TXID
-	memcpy(&cmd_response[2], &settings.dex_tx_id, sizeof(settings.dex_tx_id));
+	memcpy(&cmd_response[2], &dex_tx_id, sizeof(dex_tx_id));
 	cmd_response[6] = DEXBRIDGE_PROTO_LEVEL;
 	send_data(cmd_response, sizeof(cmd_response));
 }
@@ -1406,34 +1028,11 @@ uint8 init_command_buff(t_command_buff* pCmd)
 //Open the UART and set 9600,n,1 parameters.
 void openUart()
 {
-	XDATA uint8 i=0;
-	XDATA uint8 msg[2];
-	sprintf(msg,"AT");
     uart1Init();
 	uart1SetParity(0);
 	uart1SetStopBits(1);
 	uartEnable();
-	//detect HM-1x baudrate, if not currently set
-	if(settings.uart_baudrate >230400) {
-		if(send_debug)
-			printf_fast("Determining HM-1x baudrate \r\n");
-		for(i=0;i<=8;i++) {
-			init_command_buff(&command_buff);
-			if(send_debug)
-				printf_fast("trying %lu\r\n", uart_baudrate[i]);
-			settings.uart_baudrate = uart_baudrate[i];
-			uart1SetBaudRate(uart_baudrate[i]);
-			send_data(msg,sizeof(msg));
-			waitDoingServices(500,got_ok,1);
-			if(got_ok) break;
-		}
-		if(!got_ok){
-			if(send_debug)
-				printf_fast("Could not detect baudrate of HM-1x, setting 9600");
-			settings.uart_baudrate=9600;
-		}
-	}
-	uart1SetBaudRate(settings.uart_baudrate); // Set saved baudrate
+	uart1SetBaudRate(9600); // Set saved baudrate
 
 	init_command_buff(&command_buff);
 //	P1DIR |= 0x08; // RTS
@@ -1469,13 +1068,8 @@ int doCommand()
 	*/
 	if(command_buff.commandBuffer[1] == 0x01 && command_buff.commandBuffer[0] == 0x06)
 	{
-		if(send_debug)
-			printf_fast("Processing TXID packet\r\n");
-		memcpy(&settings.dex_tx_id, &command_buff.commandBuffer[2],sizeof(settings.dex_tx_id));
-		saveSettingsToFlash();
+		memcpy(&dex_tx_id, &command_buff.commandBuffer[2],sizeof(dex_tx_id));
 		// send back the TXID we think we got in response
-		if(send_debug)
-			printf_fast("dex_tx_id: %lu (%s)\r\n", settings.dex_tx_id, dexcom_src_to_ascii(settings.dex_tx_id)); 
 		sent_beacon = 0;
 		return 0;
 	}
@@ -1485,57 +1079,10 @@ int doCommand()
 	*/
 	// if do_sleep is set already, don't process it
 	if(command_buff.commandBuffer[0] == 0x02 && command_buff.commandBuffer[1] == 0xF0 && !do_sleep) {
-		if(send_debug)
-			printf_fast("Processing ACK packet\r\n");
 		do_sleep = 1;
 		init_command_buff(&command_buff);
 		return(0);
 	}
-	if(command_buff.commandBuffer[0] == 0x53 || command_buff.commandBuffer[0] == 0x73) {
-		printf_fast("Processing Status Command\r\nxBridge v%s\r\n", VERSION);
-		printf_fast("dex_tx_id: %lu (%s)\r\n", settings.dex_tx_id, dexcom_src_to_ascii(settings.dex_tx_id));
-		printf_fast("initialised: %u, sleep_ble %u, dont_ignore_ble_state: %u, xBridge_hardware: %u, send_debug: %u\r\n",
-			getFlag(BLE_INITIALISED),
-			getFlag(SLEEP_BLE),
-			getFlag(DONT_IGNORE_BLE_STATE),
-			getFlag(XBRIDGE_HW),
-			getFlag(SEND_DEBUG));
-		printf_fast("battery_capacity: %u\r\n", battery_capacity);
-//		printf_fast("MDMCFG4: %x, MDMCFG3: %x\r\n", MDMCFG4,MDMCFG3); 
-//		printf_fast("PKTCTRL1: %x, PKTCTRL0: %x, PKTLEN: %x\r\n", PKTCTRL1, PKTCTRL0, PKTLEN);
-		printf_fast("current ms: %lu\r\n", getMs());
-	}
-	if(command_buff.commandBuffer[0] == 0x44 || command_buff.commandBuffer[0] == 0x64) {
-		setFlag(SEND_DEBUG,!getFlag(SEND_DEBUG));
-		saveSettingsToFlash();
-		send_debug = getFlag(SEND_DEBUG);
-		if(send_debug)
-			printf_fast("debug output on\r\n");
-		else
-			printf_fast("debug output off\r\n");
-	}
-	if(command_buff.commandBuffer[0] == 0x42 || command_buff.commandBuffer[0] == 0x62) {
-		setFlag(SLEEP_BLE,!getFlag(SLEEP_BLE));
-		saveSettingsToFlash();
-		sleep_ble = getFlag(SLEEP_BLE);
-		if(sleep_ble)
-			printf_fast("BLE Sleeping on\r\n");
-		else
-			printf_fast("BLE Sleeping off\r\n");
-	}
-	if(commandBuffIs("OK")) {
-		got_ok = 1;
-		return(0);
-	}
-/*	if(commandBuffIs("OK+SLEE")) {
-		ble_sleeping=1;
-		return(0);
-	}
-	if(commandBuffIs("OK+WAKE")) {
-		ble_sleeping=0;
-		return(0);
-	}
-*/	// we don't respond to unrecognised commands.
 	return 1;
 }
 
@@ -1564,15 +1111,13 @@ int controlProtocolService()
 			b = uart1RxReceiveByte();
 		}
 		//putchar(b);
-		if(send_debug)
-			printf_fast("%c",b);
 		command_buff.commandBuffer[command_buff.nCurReadPos] = b;
 		command_buff.nCurReadPos++;
 		//printf_fast("%x\r\n", command_buff.commandBuffer[0]);
 		// reset the command timeout.
 		cmd_to = getMs();
 		// if it is the end for the byte string, we need to process the command
-		if(command_buff.nCurReadPos == command_buff.commandBuffer[0] || (command_buff.nCurReadPos == 1 && ((command_buff.commandBuffer[0] & 0x5F) == 0x53 )) || (command_buff.nCurReadPos == 1 && ((command_buff.commandBuffer[0] & 0x5F) == 0x44 )) || (command_buff.nCurReadPos == 1 && ((command_buff.commandBuffer[0] & 0x5F) == 0x42 ))|| (command_buff.nCurReadPos == 2 && command_buff.commandBuffer[0] == 0x4F))
+		if(command_buff.nCurReadPos == command_buff.commandBuffer[0] || (command_buff.nCurReadPos == 1 && ((command_buff.commandBuffer[0] & 0x5F) == 0x53 )) || (command_buff.nCurReadPos == 1 && ((command_buff.commandBuffer[0] & 0x5F) == 0x44 )) || (command_buff.nCurReadPos == 2 && command_buff.commandBuffer[0] == 0x4F))
 		{
 			// ok we got the end of a command;
 			if(command_buff.nCurReadPos)
@@ -1596,16 +1141,9 @@ int controlProtocolService()
 // if bWithProtocol is true, also check for commands on both USB and UART
 int doServices(uint8 bWithProtocol)
 {
-	dex_tx_id_set = (settings.dex_tx_id != 0);
 	boardService();
 	updateLeds();
 	usbComService();
-	bleConnectMonitor();
-/*	if(initialised && ble_connected && !sent_beacon) {
-		sent_beacon = 1;
-		sendBeacon();
-	}
-*/
 	if(bWithProtocol)
 		return controlProtocolService();
 	return 1;
@@ -1638,8 +1176,6 @@ int WaitForPacket(uint32 milliseconds, Dexcom_packet* pkt, uint8 channel)
 	static uint8 lastpktxid = 64;
 	// a variable to use to convert the pkt-txId to something we can use.
 	uint8 txid = 0;
-	if(send_debug)
-		printf_fast("waiting for packet on channel %u for %lu \r\n", channel, milliseconds);
 	// safety first, make sure the channel is valid, and return with error if not.
 	if(channel >= NUM_CHANNELS)
 		return -1;
@@ -1668,7 +1204,7 @@ int WaitForPacket(uint32 milliseconds, Dexcom_packet* pkt, uint8 channel)
 				memcpy(pkt, packet, min8(len+2, sizeof(Dexcom_packet))); 
 				
 				// is the pkt->src_addr the one we want?
-				if(pkt->src_addr == settings.dex_tx_id || settings.dex_tx_id == 0)
+				if(pkt->src_addr == dex_tx_id || dex_tx_id == 0)
 				{
 					// subtract channel index from transaction ID.  This normalises it so the same transaction id is for all transmissions of a same packet
 					// and makes masking the last 2 bits safe regardless of which channel the packet was acquired on
@@ -1773,13 +1309,9 @@ int get_packet(Dexcom_packet* pPkt)
 				// got a packet that passed CRC
 					pkt_time = getMs();
 					timed_out = 0;
-					if(send_debug)
-						printf_fast("got a packet at %lu on channel %u\r\n", pkt_time, last_channel);
 					return 1;
 			case 0:
 				// timed out
-				//printf_fast("timed out\r");
-				//last_cycle_time=now;
 				timed_out = 1;
 				continue;
 			case -1:
@@ -1804,7 +1336,6 @@ void LineStateChangeCallback(uint8 state)
 	usb_connected = state & ACM_CONTROL_LINE_DTR;
 }
 
-//extern void basicUsbInit();
 
 void main()
 {   
@@ -1814,8 +1345,6 @@ void main()
 	systemInit();
 	//initialise the USB port
 	usbInit();
-	//initialise the dma channel for working with flash.
-	dma_Init();
 	//initialise sleep library
 	sleepInit();
 	//initialise the radio_mac library
@@ -1828,168 +1357,56 @@ void main()
 	MCSM2 = 0x17;			// terminate receiving on drop of carrier, but keep it up when packet quality is good.
 	// implement the USB line State Changed callback function.  
 	usbComRequestLineStateChangeNotification(LineStateChangeCallback);
+	// Open the UART and set it up for comms to HM-10
+	openUart();
 	//configure the P1_2 and P1_3 IO pins
-	//makeAllOutputs(LOW);
-	setPort1PullType(LOW);
-	setDigitalInput(12,PULLED);
+	makeAllOutputs(LOW);
 	//initialise Anlogue Input 0
 	P0INP = 0x1;
-	//delay for 30 seconds to get putty up.
-	waitDoingServices(10000,0,1);
-	printf_fast("Starting xBridge v%s\r\nRetrieving Settings\r\n", VERSION);
-	memcpy(&settings, (__xdata *)FLASH_SETTINGS, sizeof(settings));
-	//detect if we have xBridge or classic hardware
-	
-	//turn on HM-1x using P1_0
-	setDigitalOutput(10,HIGH);
-	//if P1_2 goes high in 1s, it is xBridge
-	tmp_ms = getMs();
-	while (getMs() < tmp_ms + 1000) {	
-//		waitDoingServices(50,0,1);
-//		printf_fast("P1_2 is %u\r\n",P1_2);
-		if(P1_2) break;
-	}
-	if(!P1_2) {
-		setFlag(XBRIDGE_HW,0);
-	}
 	//wait 1 seconds, just in case it needs to settle.
 	waitDoingServices(1000,0,0);
 	//initialise the command buffer
 	init_command_buff(&command_buff);
-	// Open the UART and set it up for comms to HM-10
-	openUart();
-	//configure the bluetooth module
-	//if we haven't written a 0 into the appropriate flag...
-	if(getFlag(BLE_INITIALISED)) { 
-		//configure the BT module
-		configBt();
-		// set the flag to 0
-		setFlag(BLE_INITIALISED, 0);
-		//set up the value for writing to flash
-		save_settings = 1;
-	}
-	//printf_fast("battery_minimum: %u, battery_maximum: %u\r\n", battery_minimum, battery_maximum);
-	//if they are 0xFFFF, then they haven't been stored in flash, set them to something reasonable.
-	if(settings.battery_minimum == 0xFFFF || settings.battery_maximum == 0xFFFF) {
-		if(getFlag(XBRIDGE_HW)) {
-			printf_fast("xBridge hardware circuit selected\r\n");
-			setFlag(SLEEP_BLE, 1);
-			setFlag(DONT_IGNORE_BLE_STATE, 1);
-			settings.battery_maximum = BATTERY_MAXIMUM;
-			settings.battery_minimum = BATTERY_MINIMUM;
-		} else {
-			printf_fast("xDrip-wixel hardware circuit selected\r\n");
-			setFlag(SLEEP_BLE, 0);
-			setFlag(DONT_IGNORE_BLE_STATE, 0);
-			settings.battery_maximum = BATTERY_MAXIMUM_CLASSIC;
-			settings.battery_minimum = BATTERY_MINIMUM_CLASSIC;
-		}
-		save_settings = 1;
-		sleep_ble = getFlag(SLEEP_BLE);
-		send_debug = getFlag(SEND_DEBUG);
-	}
-	// measure the initial battery capacity.
-	battery_capacity = batteryPercent(adcRead(0 | ADC_REFERENCE_INTERNAL));
-	//printf_fast("%lu - battery_capacity: %u\r\n", battery_capacity);
 	// we haven't sent a beacon packet yet, so say so.
 	sent_beacon = 0;
 	LED_GREEN(1);
-	last_beacon = getMs();
-	// read the flash stored value of our TXID.
-	// we do this by reading the address we are interested in directly, cast as a pointer to the 
-	// correct data type.
-	if(settings.dex_tx_id >= 0xFFFFFFFF) 
-		settings.dex_tx_id = 0;
-	// store the time we woke up.
-	// if dex_tx_id is zero, we do not have an ID to filter on.  So, we keep sending a beacon every 5 seconds until it is set.
-	// Comment out this while loop if you wish to use promiscuous mode and receive all Dexcom tx packets from any source (inadvisable).
-	// Promiscuous mode is allowed in waitForPacket() function (dex_tx_id == 0, will match any dexcom packet).  Just don't send the 
-	// wixel a TXID packet.
+	dex_tx_id =0;
 	initialised = 1;
-	while(settings.dex_tx_id == 0) {
-		if(send_debug)
-			printf_fast("No dex_tx_id.  Sending beacon.\r\n");
-		// wait until we have a BLE connection
-		while(!ble_connected) doServices(1);
-		//send a beacon packet
 		sendBeacon();
-		doServices(0);
-		//wait 5 seconds
-		waitDoingServices(10000, dex_tx_id_set, 1);
-	}
-	// if we still have settings to save (no TXID set), save them
-	if(save_settings)
-		saveSettingsToFlash();
-	// retrieve the show_leds and send_debug settings
-	no_leds = getFlag(NO_LEDS);
-	send_debug = getFlag(SEND_DEBUG);
-	//radioCalibration();
-	// store the last beacon time
-	//printf_fast("\r\n");
 	// MAIN LOOP
 	// initialise the Radio Regisers
 	setRadioRegistersInitFunc(dex_RadioSettings);
-	if(send_debug)
-		printf_fast("looking for %lu (%s)\r\n",settings.dex_tx_id, dexcom_src_to_ascii(settings.dex_tx_id));
 	channel=0;
 	while (1)
 	{
 		Dexcom_packet Pkt;
-//		LED_RED(0);
-//		LED_GREEN(1);
+		LED_GREEN(1);
 		
 		if(get_packet(&Pkt) == 0) {
-			//printf_fast("last_beacon: %lu, getMs(): %lu\r", last_beacon, getMs());
-			if(ble_connected) 
-//				printf_fast("\r\nSending Beacon\r\n");
-				sendBeacon();
+			//sendBeacon();
 			continue;
 		}
 
-		LED_GREEN(0);
 		// ok, we got a packet
 		// when we send a packet, we wait until we get an ACK to put us to sleep.
 		// we only wait a maximum of two minutes
 		LED_RED(0);
-		if(send_debug)
-			printf_fast("%lu - got pkt\r\n", getMs());
 		while (!do_sleep){
-			while(!ble_connected && (getMs() - pkt_time)<120000) {
-				if(send_debug)
-					printf_fast("%lu - packet waiting\r\n", getMs());
-				setDigitalOutput(10,HIGH);
-				waitDoingServices(1000, ble_connected,0);
-			}
-			if(ble_connected) {
-				//printf_fast("%lu - ble_connected: %u, sent_beacon: %u\r\n", getMs(), ble_connected, sent_beacon);
-				if(send_debug)
-					printf_fast("%lu - send pkt\r\n", getMs());
-				// send the data packet
-				print_packet(&Pkt);
-			} else {
-				if(send_debug)
-					printf_fast("%lu - ble connect didn't occur, sleeping\r\n", getMs());
-				do_sleep = 1;
-			}
-			//save settings to flash if we need to
-			if(save_settings)
-				saveSettingsToFlash();
+			// send the data packet
+			print_packet(&Pkt);
 			// wait 10 seconds, listenting for the ACK.
-			if(send_debug)
-				printf_fast("%lu - waiting for ack\r\n", getMs());
 			waitDoingServices(10000, 0, 1);
 			
 			// if we got the ACK, get out of the loop.
 			// if we have sent a number of packets and still have not got an ACK, time to sleep.  We keep trying for up to 3 minutes.
 			if((getMs() - pkt_time) >= 120000) {
-				//sendBeacon();
 				sent_beacon = 0;
 				do_sleep = 1;
 			}
 		}
 			
 		// can't safely sleep if we didn't get an ACK, or if we are already sleeping!
-		if (do_sleep && !is_sleeping)
+		if (do_sleep && !is_sleeping  && dex_tx_id > 0)
 		{
 			// save all Port Interrupts state (enabled/disabled).
 		    uint8 savedPICTL = PICTL;
@@ -2001,6 +1418,9 @@ void main()
 			uint8 savedP1SEL = P1SEL;
 			uint8 savedP1DIR = P1DIR;
 			//printf_fast("%lu - going to sleep\r\n", getMs());
+			//set some LEDs so we know we are going to sleep.
+			LED_GREEN(0);
+			LED_RED(1);
 			// clear sent_beacon so we send it next time we wake up.
 			sent_beacon = 0;
 			// turn of the RF Frequency Synthesiser.
@@ -2014,9 +1434,6 @@ void main()
 			while((getMs() - dly_ms) <= 500) {
 				// allow the wixel to complete any other tasks.
 				doServices(1);
-				// if we are writing flash rignt now, reset the delay to wait again.
-				if(writing_flash)
-					dly_ms=getMs();
 			}
 			// make sure the uart send buffer is empty.
 			while(uart1TxAvailable() < 255);
@@ -2025,20 +1442,13 @@ void main()
 			LED_YELLOW(0);
 			LED_GREEN(0);
 			// turn off the BLE module
-			if(sleep_ble){
-				if(send_debug)
-					printf_fast("turning off BLE\r\n");
-				setDigitalOutput(10,LOW);
-				ble_connected = 0;
-			}
+			setDigitalOutput(10,LOW);
 			// sleep for around 300s
-			if(send_debug)
-				printf_fast("%lu - sleeping for %u\r\n", getMs(), 300-wake_before_packet);
 			radioMacSleep();
 			goToSleep(300-wake_before_packet);   //
 			got_packet = 0;
 			radioMacResume();
-			// reset the UART
+			//reset UART
 			openUart();
 			//WDCTL=0x0B;
 			// still trying to find out what this is about, but I believe it is restoring state.
@@ -2056,26 +1466,20 @@ void main()
 			// Without this, we USBCIF.SUSPENDIF will not get set (the datasheet is incomplete).
 			USBCIE = 0b0111;
 			LED_GREEN(1);
-			if(send_debug)
-				printf_fast("%lu - awake!\r\n", getMs());
 			// get the most recent battery capacity
-			battery_capacity = batteryPercent(adcRead(0 | ADC_REFERENCE_INTERNAL));
-			//printf_fast("%lu - battery_capacity: %u\r\n", battery_capacity);
 			init_command_buff(&command_buff);
 			// tell the radio to remain IDLE when the next packet is recieved.
 			MCSM1 = 0;			// after RX go to idle, we don't transmit
 			// set the start channel to 0
 			channel=0;
-			// watchdog mode??? this will do a reset?
-			//			WDCTL=0x0B;
-			// delayMs(50);    //wait for reset
 			// clear do_sleep, cause we have just woken up.
 			do_sleep = 0;
-			// power on the BLE module
-			ble_connected = 0;
-			//printf_fast("%lu - ble on\r\n", getMs());
-			setDigitalOutput(10,HIGH);
 			waitDoingServices(250,0,1);
 		}
+		else {
+			do_sleep = 0;
+		}
+		sendBeacon();
+
 	}
 }

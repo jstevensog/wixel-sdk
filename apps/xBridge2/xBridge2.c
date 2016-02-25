@@ -92,7 +92,7 @@ elsewhere.  This small bridge rig should be kept nearby the T1D at all times.
 #include <uart1.h>
 
 //define the xBridge Version
-#define VERSION ("2.35")
+#define VERSION ("2.36")
 //define the FLASH_TX_ID address.  This is the address we store the Dexcom TX ID number in.
 //#define FLASH_TX_ID		(0x77F8)
 //define the DEXBRIDGE_FLAGS address.  This is the address we store the xBridge flags in.
@@ -994,7 +994,7 @@ void goToSleep (uint16 seconds) {
 		if (sleep_time == 0 || sleep_time > seconds) {
 			if(send_debug)
 				printf_fast("too late to sleep, cancelling\r\n");
-			LED_YELLOW(1);
+			//LED_YELLOW(1);
 			// Switch back to high speed
 			boardClockInit();   
 			return;
@@ -1052,7 +1052,7 @@ void goToSleep (uint16 seconds) {
 		//printf_fast("sleep_time_ms: %lu, sleep_time: %u\r\n", sleep_time_ms, sleep_time);
 		//pkt_time += sleep_time_ms;
 		if (sleep_time == 0 || sleep_time > seconds) {
-			LED_YELLOW(1);
+			//LED_YELLOW(1);
 			// Switch back to high speed
 			boardClockInit();   
 			return;
@@ -1107,7 +1107,12 @@ void updateLeds()
 	} 
 	else 
 	{
-		LED_YELLOW(ble_connected);
+		if(getFlag(SLEEP_BLE)){
+			LED_YELLOW(ble_connected);
+		}
+		else {
+			LED_YELLOW(0);
+		}
 		if(dex_tx_id_set)
 		{
 			LED_RED(radioQueueRxCurrentPacket());

@@ -92,7 +92,7 @@ elsewhere.  This small bridge rig should be kept nearby the T1D at all times.
 #include <uart1.h>
 
 //define the xBridge Version
-#define VERSION ("2.36")
+#define VERSION ("2.37")
 //define the FLASH_TX_ID address.  This is the address we store the Dexcom TX ID number in.
 //#define FLASH_TX_ID		(0x77F8)
 //define the DEXBRIDGE_FLAGS address.  This is the address we store the xBridge flags in.
@@ -138,7 +138,7 @@ static volatile BIT ble_connected;		// bit indicating the BLE module is connecte
 static volatile BIT save_settings;		// flag to indicate that settings should be saved to flash.
 static volatile BIT got_packet;			// flag to indicate we have captured a packet.
 static volatile BIT got_ok;				// flag indicating we got OK from the HM-1x
-static volatile BIT no_leds;			// flag indicating to NOT show LEDs
+static volatile BIT do_leds;			// flag indicating to NOT show LEDs
 static volatile BIT send_debug;			// flag indicating to send debug output
 static volatile BIT sleep_ble;			// flag indicating to sleep the BLE module (power down in sleep)
 static volatile uint32 dly_ms = 0;
@@ -195,7 +195,7 @@ XDATA xBridge_settings settings;
 #define SLEEP_BLE				(0x0002)
 #define DONT_IGNORE_BLE_STATE	(0x0004)
 #define XBRIDGE_HW				(0x0008)
-#define NO_LEDS					(0x0010)
+#define DO_LEDS					(0x0010)
 #define SEND_DEBUG				(0x0020)
 // next flag will be 0x0040
 
@@ -1100,7 +1100,7 @@ void updateLeds()
 {
 	if (do_sleep)
 	{
-		if(is_sleeping)
+		if(is_sleeping && do_leds)
 		{
 			LED_YELLOW((getMs()&0x00000F00) == 0x100);
 		}
@@ -1108,18 +1108,18 @@ void updateLeds()
 	else 
 	{
 		if(getFlag(SLEEP_BLE)){
-			LED_YELLOW(ble_connected);
+			if (do_leds) LED_YELLOW(ble_connected);
 		}
 		else {
 			LED_YELLOW(0);
 		}
 		if(dex_tx_id_set)
 		{
-			LED_RED(radioQueueRxCurrentPacket());
+			if(do_leds) LED_RED(radioQueueRxCurrentPacket());
 		} 
 		else 
 		{
-			LED_RED((getMs() & 0x0000FF00) == 0x1300);
+			if(do_leds) LED_RED((getMs() & 0x0000FF00) == 0x1300);
 		}
 	}
 }
@@ -1528,6 +1528,15 @@ int doCommand()
 		else
 			printf_fast("BLE Sleeping off\r\n");
 	}
+	if(command_buff.commandBuffer[0] == 0x4C || command_buff.commandBuffer[0] == 0x62) {
+		setFlag(DO_LEDS,!getFlag(DO_LEDS));
+		saveSettingsToFlash();
+		sleep_ble = getFlag(DO_LEDS);
+		if(do_leds)
+			printf_fast("LEDs are on\r\n");
+		else
+			printf_fast("LEDs are off\r\n");
+	}
 	if(commandBuffIs("OK")) {
 		got_ok = 1;
 		return(0);
@@ -1577,7 +1586,7 @@ int controlProtocolService()
 		// reset the command timeout.
 		cmd_to = getMs();
 		// if it is the end for the byte string, we need to process the command
-		if(command_buff.nCurReadPos == command_buff.commandBuffer[0] || (command_buff.nCurReadPos == 1 && ((command_buff.commandBuffer[0] & 0x5F) == 0x53 )) || (command_buff.nCurReadPos == 1 && ((command_buff.commandBuffer[0] & 0x5F) == 0x44 )) || (command_buff.nCurReadPos == 1 && ((command_buff.commandBuffer[0] & 0x5F) == 0x42 ))|| (command_buff.nCurReadPos == 2 && command_buff.commandBuffer[0] == 0x4F))
+		if(command_buff.nCurReadPos == command_buff.commandBuffer[0] || (command_buff.nCurReadPos == 1 && ((command_buff.commandBuffer[0] & 0x5F) == 0x53 )) || (command_buff.nCurReadPos == 1 && ((command_buff.commandBuffer[0] & 0x5F) == 0x44 )) || (command_buff.nCurReadPos == 1 && ((command_buff.commandBuffer[0] & 0x5F) == 0x42 )) || (command_buff.nCurReadPos == 1 && ((command_buff.commandBuffer[0] & 0x5F) == 0x4c )) || (command_buff.nCurReadPos == 2 && command_buff.commandBuffer[0] == 0x4F))
 		{
 			// ok we got the end of a command;
 			if(command_buff.nCurReadPos)
@@ -1926,7 +1935,7 @@ void main()
 	if(save_settings)
 		saveSettingsToFlash();
 	// retrieve the show_leds and send_debug settings
-	no_leds = getFlag(NO_LEDS);
+	do_leds = getFlag(DO_LEDS);
 	send_debug = getFlag(SEND_DEBUG);
 	//radioCalibration();
 	// store the last beacon time

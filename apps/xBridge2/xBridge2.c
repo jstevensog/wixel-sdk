@@ -92,7 +92,7 @@ elsewhere.  This small bridge rig should be kept nearby the T1D at all times.
 #include <uart1.h>
 
 //define the xBridge Version
-#define VERSION ("2.38")
+#define VERSION ("2.39")
 //define the FLASH_TX_ID address.  This is the address we store the Dexcom TX ID number in.
 //#define FLASH_TX_ID		(0x77F8)
 //define the DEXBRIDGE_FLAGS address.  This is the address we store the xBridge flags in.
@@ -1108,7 +1108,12 @@ void updateLeds()
 	else 
 	{
 		if(getFlag(SLEEP_BLE)){
-			if (do_leds) LED_YELLOW(ble_connected);
+			if (do_leds) {
+				LED_YELLOW(ble_connected);
+			}
+			else {
+				LED_YELLOW(0);
+			}
 		}
 		else {
 			LED_YELLOW(0);
@@ -1935,6 +1940,7 @@ void main()
 	if(save_settings)
 		saveSettingsToFlash();
 	// retrieve the show_leds and send_debug settings
+	sleep_ble = getFlag(SLEEP_BLE);
 	do_leds = getFlag(DO_LEDS);
 	send_debug = getFlag(SEND_DEBUG);
 	//radioCalibration();
@@ -2040,8 +2046,9 @@ void main()
 			LED_GREEN(0);
 			// turn off the BLE module
 			if(sleep_ble){
-				if(send_debug)
+				if(send_debug) {
 					printf_fast("turning off BLE\r\n");
+					}
 				setDigitalOutput(10,LOW);
 				ble_connected = 0;
 			}

@@ -141,6 +141,7 @@ static volatile BIT got_ok;				// flag indicating we got OK from the HM-1x
 static volatile BIT do_leds;			// flag indicating to NOT show LEDs
 static volatile BIT send_debug;			// flag indicating to send debug output
 static volatile BIT sleep_ble;			// flag indicating to sleep the BLE module (power down in sleep)
+static volatile BIT dexterity_mode;		// ??????????
 static volatile uint32 dly_ms = 0;
 static volatile uint32 pkt_time = 0;
 // these flags will be stored in Flash
@@ -154,7 +155,7 @@ static uint8 save_IEN2;
 XDATA uint8 battery_capacity=0;
 XDATA uint32 last_beacon=0;
 XDATA uint32 last_battery=0;
-XDATA static volatile uint8 channel = 0;	//current radio channel
+XDATA static volatile uint8 channelx = 0;	//current radio channel
 XDATA uint8 last_channel = 0; // last channel we captured a packet on
 // _Dexcom_packet - Type Definition of a Dexcom Radio packet
 // actual packet length is 17 bytes, excluding len and checksum, rssi &LQI.
@@ -197,7 +198,8 @@ XDATA xBridge_settings settings;
 #define XBRIDGE_HW				(0x0008)
 #define DO_LEDS					(0x0010)
 #define SEND_DEBUG				(0x0020)
-// next flag will be 0x0040
+#define DEXTERITY_MODE				(0x0040)
+// next flag will be 0x0080
 
 // array of HM-1x baudrates for rate detection.
 XDATA uint32 uart_baudrate[9] = {9600,19200,38400,57600,115200,4800,2400,1200,230400};
@@ -790,7 +792,7 @@ uint8 min8(uint8 a, uint8 b)
 }
 
 
-/*
+
 // getPacketRSSI - returns the RSSI value from the Dexcom_packet passed to it.
 int8 getPacketRSSI(Dexcom_packet* p)
 {
@@ -798,7 +800,7 @@ int8 getPacketRSSI(Dexcom_packet* p)
 	return (p->RSSI/2)-73;
 }
 
-
+/*
 //getPacketPassedChecksum - returns the checksum of the Dexcom_packet passed to it.
 uint8 getPacketPassedChecksum(Dexcom_packet* p)
 {
@@ -815,7 +817,7 @@ XDATA char SrcNameTable[32] = { '0', '1', '2', '3', '4', '5', '6', '7',
 // convert the passed uint32 Dexcom source address into an ascii string in the passed char addr[6] array.
 char *dexcom_src_to_ascii(uint32 src)
 {
-	XDATA char addr[6];
+	static XDATA char addr[6];
 	//each src value is 5 bits long, and is converted in this way.
 	addr[0] = SrcNameTable[(src >> 20) & 0x1F];		//the last character is the src, shifted right 20 places, ANDED with 0x1F
 	addr[1] = SrcNameTable[(src >> 15) & 0x1F];		//etc
@@ -1643,7 +1645,6 @@ void swap_channel(uint8 channel, uint8 newFSCTRL0)
 	CHANNR = channel;
 	RFST = 2;   //RX
 }
-
 int WaitForPacket(uint32 milliseconds, Dexcom_packet* pkt, uint8 channel)
 {
 	// store the current wixel milliseconds so we know how long we are waiting.
@@ -1658,7 +1659,17 @@ int WaitForPacket(uint32 milliseconds, Dexcom_packet* pkt, uint8 channel)
 	// a variable to use to convert the pkt-txId to something we can use.
 	uint8 txid = 0;
 	if(send_debug)
-		printf_fast("waiting for packet on channel %u for %lu \r\n", channel, milliseconds);
+		printf_fast("waiting for packet on channel %u for %lu until %lu \r\n", channel, milliseconds, getMs() + milliseconds);
+
+        if(channel == 0 && last_channel == 0 && milliseconds != 298000) {
+             while ((getMs() - start) < milliseconds) {
+                  doServices(1);
+             }
+             printf_fast("leaving channel 0 without doing anything time= %lu\r\n", getMs() );
+             return 0;
+        }
+
+
 	// safety first, make sure the channel is valid, and return with error if not.
 	if(channel >= NUM_CHANNELS)
 		return -1;
@@ -1705,10 +1716,13 @@ int WaitForPacket(uint32 milliseconds, Dexcom_packet* pkt, uint8 channel)
 						lastpktxid = txid;
 					}
 					last_channel = channel;
+                                        //print_packet_dexterity(pkt);
+                                        printf("dexiterity packet %s %lu %lu %hhu %hhi %hhu\r\n", dexcom_src_to_ascii(pkt->src_addr), dex_num_decoder(pkt->raw), 2 * dex_num_decoder(pkt->filtered), pkt->battery, getPacketRSSI(pkt), txid);
+                                        //printf("dexiterity packet %lu %lu %hhu %hhi %hhu\r\n", dex_num_decoder(pkt->raw), 2 * dex_num_decoder(pkt->filtered), pkt->battery, getPacketRSSI(pkt), txid);
 				}
 			}
 			// the line below can be commented/uncommented for debugging.
-			//else printf_fast("%d bad CRC\r\n", channel);
+			else printf_fast("%d bad CRC\r\n", channel);
 			// pull the packet off the queue, so it isn't there next time we look.
 			radioQueueRxDoneWithPacket();
 			//return the correct code.
@@ -1744,6 +1758,9 @@ int WaitForPacket(uint32 milliseconds, Dexcom_packet* pkt, uint8 channel)
 		0		- 	No Packet received, or a command recieved on the USB.
 		1		-	Packet recieved that passed CRC.
 */
+
+#define PACKET_TIME 299450
+
 int get_packet(Dexcom_packet* pPkt)
 {
 	static BIT timed_out = 0;
@@ -1771,21 +1788,23 @@ int get_packet(Dexcom_packet* pPkt)
 			}
 			else if(getMs()<pkt_time) 
 			{
-				delay = (300000 + wake_before_packet) - (4294967295 + getMs() - pkt_time);
+				delay = (PACKET_TIME + wake_before_packet) - (4294967295 + getMs() - pkt_time);
 			}
 			else
 			{
-				delay = (300000 + wake_before_packet) - (getMs() - pkt_time);
+				delay = (PACKET_TIME + wake_before_packet) - (getMs() - pkt_time);
 			}
 			if(delay)
 			{
-				delay -= (channel*500);
+				delay -= (last_channel*500);
 			}
-			while(delay > 300000)
+			while(delay > PACKET_TIME)
 			{
-				delay -=300000;
+				delay -=PACKET_TIME;
 			}
 		}
+
+ 
 		switch(WaitForPacket(delay, pPkt, nChannel))
 		{
 			case 1:			
@@ -1827,10 +1846,14 @@ void LineStateChangeCallback(uint8 state)
 
 void main()
 {   
+        
 	uint8 i = 0;
 	uint16 rpt_pkt=0;
 	XDATA uint32 tmp_ms = 0;
-	systemInit();
+	
+setFlag(DEXTERITY_MODE,1);
+
+        systemInit();
 	//initialise the USB port
 	usbInit();
 	//initialise the dma channel for working with flash.
@@ -1951,13 +1974,18 @@ void main()
 	setRadioRegistersInitFunc(dex_RadioSettings);
 	if(send_debug)
 		printf_fast("looking for %lu (%s)\r\n",settings.dex_tx_id, dexcom_src_to_ascii(settings.dex_tx_id));
-	channel=0;
+	channelx=0;
 	while (1)
 	{
+                int cont = 1;
 		Dexcom_packet Pkt;
 //		LED_RED(0);
 //		LED_GREEN(1);
 		
+                if(send_debug) {
+                     printf_fast("%lu - calling get_packet\r\n", getMs());
+                }
+
 		if(get_packet(&Pkt) == 0) {
 			//printf_fast("last_beacon: %lu, getMs(): %lu\r", last_beacon, getMs());
 			if(ble_connected) 
@@ -1966,6 +1994,9 @@ void main()
 			continue;
 		}
 
+                
+                
+
 		LED_GREEN(0);
 		// ok, we got a packet
 		// when we send a packet, we wait until we get an ACK to put us to sleep.
@@ -1973,6 +2004,21 @@ void main()
 		LED_RED(0);
 		if(send_debug)
 			printf_fast("%lu - got pkt\r\n", getMs());
+
+                 //?????
+                 waitDoingServices(1000, 0,1);
+                 LED_GREEN(1);
+                 waitDoingServices(1000, 0,1);
+                 LED_GREEN(0);
+                 waitDoingServices(1000, 0,1);
+                 LED_GREEN(1);
+                 if(getFlag(DEXTERITY_MODE)){
+                     continue; //?????????????????????????
+                 }
+
+
+
+
 		while (!do_sleep){
 			while(!ble_connected && (getMs() - pkt_time)<120000) {
 				if(send_debug)
@@ -2004,7 +2050,11 @@ void main()
 			if((getMs() - pkt_time) >= 120000) {
 				//sendBeacon();
 				sent_beacon = 0;
-				do_sleep = 1;
+				//????????do_sleep = 1;
+                //                if(send_debug) {
+                //                     printf_fast("%lu - quiting loop\r\n", getMs());
+                //                }
+                //                break; 
 			}
 		}
 			
@@ -2086,7 +2136,7 @@ void main()
 			// tell the radio to remain IDLE when the next packet is recieved.
 			MCSM1 = 0;			// after RX go to idle, we don't transmit
 			// set the start channel to 0
-			channel=0;
+			channelx=0;
 			// watchdog mode??? this will do a reset?
 			//			WDCTL=0x0B;
 			// delayMs(50);    //wait for reset

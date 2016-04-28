@@ -1393,7 +1393,7 @@ void sendBeacon()
 	uint8 XDATA cmd_response[7];
 	//return if we don't have a connection or if we have already sent a beacon
 	if(send_debug)
-		printf_fast("sending beacon Now\r\n");
+		printf_fast("%lu: sending beacon Now\r\n", getMs());
 	//prepare the response
 	//responding with number of bytes,
 	cmd_response[0] = sizeof(cmd_response);
@@ -1507,12 +1507,13 @@ int doCommand()
 	if(command_buff.commandBuffer[0] == 0x53 || command_buff.commandBuffer[0] == 0x73) {
 		printf_fast("Processing Status Command\r\nxBridge v%s\r\n", VERSION);
 		printf_fast("dex_tx_id: %lu (%s)\r\n", settings.dex_tx_id, dexcom_src_to_ascii(settings.dex_tx_id));
-		printf_fast("initialised: %u, sleep_ble %u, dont_ignore_ble_state: %u, xBridge_hardware: %u, send_debug: %u\r\n",
+		printf_fast("initialised: %u, sleep_ble: %u, dont_ignore_ble_state: %u, xBridge_hardware: %u, send_debug: %u, do_leds: %u\r\n",
 			getFlag(BLE_INITIALISED),
 			getFlag(SLEEP_BLE),
 			getFlag(DONT_IGNORE_BLE_STATE),
 			getFlag(XBRIDGE_HW),
-			getFlag(SEND_DEBUG));
+			getFlag(SEND_DEBUG),
+			getFlag(DO_LEDS));
 		printf_fast("battery_capacity: %u\r\n", battery_capacity);
 //		printf_fast("MDMCFG4: %x, MDMCFG3: %x\r\n", MDMCFG4,MDMCFG3); 
 //		printf_fast("PKTCTRL1: %x, PKTCTRL0: %x, PKTLEN: %x\r\n", PKTCTRL1, PKTCTRL0, PKTLEN);
@@ -1566,6 +1567,8 @@ int controlProtocolService()
 {
 	static uint32 cmd_to;
 	// ok this is where we check if there's anything happening incoming on the USB COM port or UART 0 port.
+	//trying setting nRet to 0, it should only return 1 if there is something to do.
+	//int nRet = 1;
 	int nRet = 1;
 	uint8 b;
 	//if we have timed out waiting for a command, clear the command buffer and return.
@@ -1573,12 +1576,13 @@ int controlProtocolService()
 	{
 		// clear command buffer if there was anything
 		init_command_buff(&command_buff);
+		//nRet = 0;
 		return nRet;
 	}	
 	//while we have something in either buffer,
 	while((usbComRxAvailable() || uart1RxAvailable()) && command_buff.nCurReadPos < USB_COMMAND_MAXLEN)
 	{
-	// if it is the USB, get the bye from it, otherwise get it from the UART.
+	// if it is the USB, get the byte from it, otherwise get it from the UART.
 		if (usbComRxAvailable()) {
 			b = usbComRxReceiveByte();
 		}
@@ -1794,7 +1798,7 @@ int get_packet(Dexcom_packet* pPkt)
 			{
 				delay -= (last_channel*500);
 				if(send_debug)
-					printf_fast("last_channel is %u, delay is %lu\r\n", last_channel, delay);
+					printf_fast("%lu: last_channel is %u, delay is %lu\r\n", getMs(), last_channel, delay);
 			}
 			// in case the figure we came up with is greater than 5 minutes, we deal with it here.  Probably never will run, i'm just like that.
 			while(delay > 300000)

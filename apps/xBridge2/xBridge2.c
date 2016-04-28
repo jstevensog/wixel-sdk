@@ -92,7 +92,7 @@ elsewhere.  This small bridge rig should be kept nearby the T1D at all times.
 #include <uart1.h>
 
 //define the xBridge Version
-#define VERSION ("2.39")
+#define VERSION ("2.40")
 //define the FLASH_TX_ID address.  This is the address we store the Dexcom TX ID number in.
 //#define FLASH_TX_ID		(0x77F8)
 //define the DEXBRIDGE_FLAGS address.  This is the address we store the xBridge flags in.
@@ -1089,6 +1089,9 @@ void goToSleep (uint16 seconds) {
 			// or external Port interrupt.
 			__asm nop __endasm;    
 		}
+		// Switch back to high speed      
+		boardClockInit(); 
+		// add the time we were asleep to ms count
 		addMs(sleep_time_ms);
 	}
 //	printf_fast("awake!  getMs is %lu\r\n", getMs());
@@ -1756,31 +1759,44 @@ int get_packet(Dexcom_packet* pPkt)
 	// start channel is the channel we initially do our infinite wait on.
 	for(nChannel = START_CHANNEL; nChannel < NUM_CHANNELS; nChannel++)
 	{
+		// if we are not on the start channel, we are delaying only for 500ms to capture a packet on the channel.
 		if(nChannel != START_CHANNEL) 
 		{
 			delay=500;
 		}
+		// else, if we are on the start channel and we timed out, we are going to delay for 298 seconds (300 - 2 seconds for channels 1-3)
 		else if (timed_out && (nChannel == 0)) 
 		{
 			delay=298000;
 		}
+		// otherwise.....
 		else
 		{
+			// if we haven't captured a packet (pkt_time =0), we sit on channel 0 until we do, so set the delay to 0
 			if (!pkt_time) {
 				delay = 0;
 			}
+			// if we got a packet previously (pkt_time != 0), we calculate when we are expecting a packet.
 			else if(getMs()<pkt_time) 
 			{
+				//the current time is less than the pkt_time, meaning our ms register has rolled over.
 				delay = (300000 + wake_before_packet) - (4294967295 + getMs() - pkt_time);
 			}
 			else
 			{
+				// the current time is greater than the last pkt_time, so we just do a basic calculation.
+				// 5 mins in ms + the wake_before_packet time - (current ms - last packet ms)
 				delay = (300000 + wake_before_packet) - (getMs() - pkt_time);
 			}
+			//if we have a delay number that doesn't equal 0, we need to subtract 500 * the channel we last captured on.
+			// ie, if we last captured on channel 0, subtract 0.  If on channel 1, subtract 500, etc
 			if(delay)
 			{
-				delay -= (channel*500);
+				delay -= (last_channel*500);
+				if(send_debug)
+					printf_fast("last_channel is %u, delay is %lu\r\n", last_channel, delay);
 			}
+			// in case the figure we came up with is greater than 5 minutes, we deal with it here.  Probably never will run, i'm just like that.
 			while(delay > 300000)
 			{
 				delay -=300000;

@@ -1568,7 +1568,6 @@ int controlProtocolService()
 	static uint32 cmd_to;
 	// ok this is where we check if there's anything happening incoming on the USB COM port or UART 0 port.
 	//trying setting nRet to 0, it should only return 1 if there is something to do.
-	//int nRet = 1;
 	int nRet = 1;
 	uint8 b;
 	//if we have timed out waiting for a command, clear the command buffer and return.

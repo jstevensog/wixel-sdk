@@ -1713,8 +1713,13 @@ int WaitForPacket(uint32 milliseconds, Dexcom_packet* pkt, uint8 channel)
 					last_channel = channel;
 				}
 			}
+			else {
+				if(send_debug)
+					printf_fast("bad CRC on channel %d\r\n", channel);
+				nRet = -2;
+			}
 			// the line below can be commented/uncommented for debugging.
-			//else printf_fast("%d bad CRC\r\n", channel);
+			//else 
 			// pull the packet off the queue, so it isn't there next time we look.
 			radioQueueRxDoneWithPacket();
 			//return the correct code.
@@ -1753,6 +1758,7 @@ int WaitForPacket(uint32 milliseconds, Dexcom_packet* pkt, uint8 channel)
 int get_packet(Dexcom_packet* pPkt)
 {
 	static BIT timed_out = 0;
+	static BIT crc_error = 0;
 	//static uint32 last_cycle_time;
 	//uint32 now=0;
 	uint32 delay = 0;
@@ -1795,14 +1801,16 @@ int get_packet(Dexcom_packet* pPkt)
 			// ie, if we last captured on channel 0, subtract 0.  If on channel 1, subtract 500, etc
 			if(delay)
 			{
-				delay -= (last_channel*500);
+				delay -= (last_channel * 500);
+				if(crc_error) 
+					delay += 50;
 				if(send_debug)
 					printf_fast("%lu: last_channel is %u, delay is %lu\r\n", getMs(), last_channel, delay);
 			}
 			// in case the figure we came up with is greater than 5 minutes, we deal with it here.  Probably never will run, i'm just like that.
 			while(delay > 300000)
 			{
-				delay -=300000;
+				delay -= 300000;
 			}
 		}
 		switch(WaitForPacket(delay, pPkt, nChannel))
@@ -1826,8 +1834,13 @@ int get_packet(Dexcom_packet* pPkt)
 				//printf_fast("leaving getPacket\r\n");
 				return 0;
 			}
+			case -2:
+			{
+				//got a bad CRC on the channel, so say so to let the delay calculation know to wait a little longer.
+				crc_error = 1;
+			}
 		}
-		delay = 600;
+		//delay = 600;
 	}
 	//printf_fast("leaving getPacket\r\n");
 	return 0;

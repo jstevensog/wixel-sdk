@@ -126,11 +126,11 @@ where:
 #define DEXBRIDGE_PROTO_LEVEL (0x01)
 //define the Packet Receive Timeout on each channel in ms
 
-#define wake_before_packet (40)         	// millyseconds to wake before a packet is expected
-#define wake_wixel_beofre_packet (40)       // seconds to wake the BT system before a packet
+#define wake_before_packet (40)			// millyseconds to wake before a packet is expected
+#define wake_wixel_before_packet (40)		// seconds to wake the wixel system before a packet
 
 static volatile BIT do_sleep = 0;		// indicates we should go to sleep between packets
-static volatile BIT is_sleeping = 0;	        // flag indicating we are sleeping.
+static volatile BIT is_sleeping = 0;		// flag indicating we are sleeping.
 static volatile BIT usb_connected;		// indicates DTR set on USB.  Meaning a terminal program is connected via USB for debug.
 static volatile BIT sent_beacon;		// indicates if we have sent our current dex_tx_id to the app.
 static volatile BIT writing_flash;		// indicates if we are writing to flash.

@@ -154,7 +154,6 @@ static uint8 save_IEN2;
 XDATA uint8 battery_capacity=0;
 XDATA uint32 last_beacon=0;
 XDATA uint32 last_battery=0;
-XDATA static volatile uint8 channel = 0;	//current radio channel
 XDATA uint8 last_channel = 0; // last channel we captured a packet on
 // _Dexcom_packet - Type Definition of a Dexcom Radio packet
 // actual packet length is 17 bytes, excluding len and checksum, rssi &LQI.
@@ -1983,7 +1982,6 @@ void main()
 	setRadioRegistersInitFunc(dex_RadioSettings);
 	if(send_debug)
 		printf_fast("looking for %lu (%s)\r\n",settings.dex_tx_id, dexcom_src_to_ascii(settings.dex_tx_id));
-	channel=0;
 	while (1)
 	{
 		Dexcom_packet Pkt;
@@ -2117,8 +2115,6 @@ void main()
 			init_command_buff(&command_buff);
 			// tell the radio to remain IDLE when the next packet is recieved.
 			MCSM1 = 0;			// after RX go to idle, we don't transmit
-			// set the start channel to 0
-			channel=0;
 			// watchdog mode??? this will do a reset?
 			//			WDCTL=0x0B;
 			// delayMs(50);    //wait for reset

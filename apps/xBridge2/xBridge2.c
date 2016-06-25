@@ -177,10 +177,11 @@ typedef struct _Dexcom_packet
 	uint32  ms;
 } Dexcom_packet;
 
+#define DXQUEUESIZE 64 //only use 2^x values here!
 typedef struct {
 	uint8 read;
 	uint8 write;
-	Dexcom_packet buffer[32];
+	Dexcom_packet buffer[DXQUEUESIZE];
 } Dexcom_fifo;
 
 XDATA Dexcom_fifo Pkts;
@@ -1350,6 +1351,7 @@ typedef struct _RawRecord
 	uint32	dex_src_id;		//raw TXID of the Dexcom Transmitter
 	//int8	RSSI;	//RSSI level of the transmitter, used to determine if it is in range.
 	//uint8	txid;	//ID of this transmission.  Essentially a sequence from 0-63
+	uint32  delay;
 	uint8	function; // Byte representing the xBridge code funcitonality.  01 = this level.
 } RawRecord;
 
@@ -1367,6 +1369,7 @@ void print_packet(Dexcom_packet* pPkt, uint32 delay)
 	//msg.dex_src_id = dex_tx_id;
 	msg.dex_src_id = pPkt->src_addr;
 	msg.size = sizeof(msg);
+	msg.delay = delay;
 	msg.function = DEXBRIDGE_PROTO_LEVEL; // basic functionality, data packet (with ack), TXID packet, beacon packet (also TXID ack).
 	if (send_debug)
 		printf_fast("%lu: sending data packet with a delay of %lu\r\n", getMs(), delay);
@@ -1566,12 +1569,12 @@ int doCommand()
 		printf_fast("battery_capacity: %u\r\n", battery_capacity);
 //		printf_fast("MDMCFG4: %x, MDMCFG3: %x\r\n", MDMCFG4,MDMCFG3); 
 //		printf_fast("PKTCTRL1: %x, PKTCTRL0: %x, PKTLEN: %x\r\n", PKTCTRL1, PKTCTRL0, PKTLEN);
-		printf_fast("packet queue write: %d, read %d\r\n", Pkts.write, Pkts.read);
+		printf_fast("packet queue size: %d, write pos: %d, read pos: %d\r\n", DXQUEUESIZE, Pkts.write, Pkts.read);
 		if (Pkts.write != Pkts.read) {
 			uint8 i = Pkts.read;
 			while (i != Pkts.write) {
 				debug_print_packet(&Pkts.buffer[i], (now - Pkts.buffer[i].ms));
-				i = (i+1) & 31;
+				i = (i+1) & (DXQUEUESIZE-1);
 			}
 		}
 		printf_fast("current ms: %lu\r\n", now);
@@ -2061,9 +2064,9 @@ void main()
 		if(send_debug)
 			printf_fast("%lu - got pkt, stored at position %d\r\n", getMs(), Pkts.write);
 		// so increment write position for next round...
-		Pkts.write = (Pkts.write + 1) & 31;
+		Pkts.write = (Pkts.write + 1) & (DXQUEUESIZE-1);
 		if (Pkts.read == Pkts.write)
-			Pkts.read = (Pkts.read + 1) & 31; //overflow in ringbuffer, overwriting oldest entry, thus move read one up
+			Pkts.read = (Pkts.read + 1) & (DXQUEUESIZE-1); //overflow in ringbuffer, overwriting oldest entry, thus move read one up
 		// when we send a packet, we wait until we get an ACK to put us to sleep.
 		// we only wait a maximum of two minutes
 		LED_RED(1); //we got a packet - so show it...
@@ -2086,7 +2089,7 @@ void main()
 				else  //timer wrapped around - will happen once every 50 days...
 					delay = (MAXINT32 - Pkts.buffer[Pkts.read].ms + now);
 				print_packet(&Pkts.buffer[Pkts.read], delay);
-				debug_print_packet(&Pkts.buffer[Pkts.read], delay);
+				//debug_print_packet(&Pkts.buffer[Pkts.read], delay);
 			} else {
 				if(send_debug)
 					printf_fast("%lu - ble connect didn't occur, sleeping\r\n", getMs());
@@ -2105,7 +2108,7 @@ void main()
 				if (do_sleep) { //we got an ack - but let's see if there is more to write...
 					if (send_debug)
 						printf_fast("%lu got ack for read position %d while write is %d, incrementing read\r\n", getMs(), Pkts.read, Pkts.write);
-					Pkts.read = (Pkts.read + 1) & 31; //increment read position since we got an ack for the last package
+					Pkts.read = (Pkts.read + 1) & (DXQUEUESIZE-1); //increment read position since we got an ack for the last package
 					if (Pkts.read != Pkts.write) { // more data available, skip sleeping
 						do_sleep = 0;
 					}

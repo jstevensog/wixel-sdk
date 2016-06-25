@@ -92,7 +92,7 @@ elsewhere.  This small bridge rig should be kept nearby the T1D at all times.
 #include <uart1.h>
 
 //define the xBridge Version
-#define VERSION ("2.42")
+#define VERSION ("2.43")
 //define the FLASH_TX_ID address.  This is the address we store the Dexcom TX ID number in.
 //#define FLASH_TX_ID		(0x77F8)
 //define the DEXBRIDGE_FLAGS address.  This is the address we store the xBridge flags in.
@@ -853,7 +853,7 @@ void makeAllOutputs(BIT value)
 {
 	//we only make the P1_ports low, and not P1_2 or P1_3
     int i;
-    for (i=11;i < 17; i++)
+    for (i=10;i <= 17; i++)
 	{
 		if( i == 10 && !(sleep_ble))
 			continue;
@@ -2068,6 +2068,8 @@ void main()
 			uint8 savedP0DIR = P0DIR;
 			uint8 savedP1SEL = P1SEL;
 			uint8 savedP1DIR = P1DIR;
+			P1SEL = 0x00;
+			P1DIR =0xff;
 			//printf_fast("%lu - going to sleep\r\n", getMs());
 			// clear sent_beacon so we send it next time we wake up.
 			sent_beacon = 0;
@@ -2107,8 +2109,6 @@ void main()
 			goToSleep(300-wake_before_packet);   //
 			got_packet = 0;
 			radioMacResume();
-			// reset the UART
-			openUart();
 			//WDCTL=0x0B;
 			// still trying to find out what this is about, but I believe it is restoring state.
 			// restore all Port Interrupts we had prior to going to sleep. 
@@ -2120,11 +2120,13 @@ void main()
 			P0DIR = savedP0DIR;
 			P1SEL = savedP1SEL;
 			P1DIR = savedP1DIR;
+			// reset the UART
+			openUart();
 			// Enable suspend detection and disable any other weird features.
 			USBPOW = 1;
 			// Without this, we USBCIF.SUSPENDIF will not get set (the datasheet is incomplete).
 			USBCIE = 0b0111;
-			LED_GREEN(1);
+			//LED_GREEN(1);
 			if(send_debug)
 				printf_fast("%lu - awake!\r\n", getMs());
 			// get the most recent battery capacity

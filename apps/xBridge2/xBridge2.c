@@ -223,6 +223,21 @@ typedef struct _command_buff
 //create a static command structure to use.
 static t_command_buff command_buff;
 
+// macro to wait a specified number of milliseconds, whilst processing services.
+#define waitDoingServices(wait_time, break_flag, bProtocolServices) \
+  do { \
+	XDATA uint32 start_wait; \
+	start_wait = getMs(); \
+	while ((getMs() - start_wait) < wait_time) { \
+		doServices(bProtocolServices); \
+		if(break_flag) break; \
+		delayMs(20); \
+	} \
+	if (break_flag && send_debug) { \
+		printf_fast("%lu returned from waitDoingServices after %lu of %d ms with flag '%s'\r\n", getMs(), (getMs() - start_wait), wait_time, #break_flag); \
+	} \
+  } while (0)
+
 void setFlag(uint8 ptr, uint8 val)
 {
 	if(val)
@@ -844,6 +859,7 @@ void uartEnable() {
     U1CSR |= 0x40; // Recevier enable
 }
 
+/**
 // function to wait a specified number of milliseconds, whilst processing services.
 void waitDoingServices (uint32 wait_time, volatile BIT break_flag, BIT bProtocolServices ) {
 	XDATA uint32 start_wait;
@@ -858,6 +874,7 @@ void waitDoingServices (uint32 wait_time, volatile BIT break_flag, BIT bProtocol
 		delayMs(20);
 	}
 }
+**/
 
 
 

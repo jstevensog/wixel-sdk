@@ -108,7 +108,8 @@ elsewhere.  This small bridge rig should be kept nearby the T1D at all times.
 //define the start channel
 #define START_CHANNEL		(0)
 //define the maximum value for a uint32 as 2^32-1 = 4294967295
-#define MAXINT32 (2^32-1)
+#define MAXINT32 ((uint32)(-1))
+
 //defines battery minimum and maximum voltage values for converting to percentage.
 /* To calculate the value for a specific voltage, use the following formula
 	val = (((voltage/RH+RL)*RL)/1.25)*2047
@@ -224,7 +225,7 @@ typedef struct _command_buff
 static t_command_buff command_buff;
 
 // macro to wait a specified number of milliseconds, whilst processing services.
-#define waitDoingServices(wait_time, break_flag, bProtocolServices) \
+#define waitDoingServicesInterruptible(wait_time, break_flag, bProtocolServices) \
   do { \
 	XDATA uint32 start_wait; \
 	start_wait = getMs(); \
@@ -235,6 +236,17 @@ static t_command_buff command_buff;
 	} \
 	if (break_flag && send_debug) { \
 		printf_fast("%lu returned from waitDoingServices after %lu of %d ms with flag '%s'\r\n", getMs(), (getMs() - start_wait), wait_time, #break_flag); \
+	} \
+  } while (0)
+
+// macro to wait a specified number of milliseconds, whilst processing services.
+#define waitDoingServices(wait_time, bProtocolServices) \
+  do { \
+	XDATA uint32 start_wait; \
+	start_wait = getMs(); \
+	while ((getMs() - start_wait) < wait_time) { \
+		doServices(bProtocolServices); \
+		delayMs(20); \
 	} \
   } while (0)
 
@@ -1173,6 +1185,7 @@ void updateLeds()
 		else {
 			LED_YELLOW(0);
 		}
+		/**
 		if(dex_tx_id_set)
 		{
 			if(do_leds) LED_RED(radioQueueRxCurrentPacket());
@@ -1181,6 +1194,7 @@ void updateLeds()
 		{
 			if(do_leds) LED_RED((getMs() & 0x0000FF00) == 0x1300);
 		}
+		**/
 	}
 }
 
@@ -1247,7 +1261,7 @@ void send_data( uint8 *msg, uint8 len)
 	{
 		uart1TxSendByte(msg[i]);
 	}
-	while(uart1TxAvailable()<255) waitDoingServices(20,0,1);
+	while(uart1TxAvailable()<255) waitDoingServices(20,1);
 	if(usb_connected) {
 		if(send_debug)
 			printf_fast("Sending: ");
@@ -1256,7 +1270,7 @@ void send_data( uint8 *msg, uint8 len)
 		{
 			usbComTxSendByte(msg[i]);
 		}
-		while(usbComTxAvailable()<128) waitDoingServices(20,0,1);
+		while(usbComTxAvailable()<128) waitDoingServices(20,1);
 		if(send_debug)
 			printf_fast("\r\nResponse: ");
 	}
@@ -1315,13 +1329,13 @@ void configBt() {
 	delayMs(1000);
 */	length = sprintf(msg_buf, "AT+NAMExBridge%02x%02x", serialNumber[0],serialNumber[1]);
     send_data(msg_buf, length);
-	waitDoingServices(500,0,1);
+	waitDoingServices(500,1);
 /*	length = sprintf(msg_buf, "AT+RELI1");
     send_data(msg_buf, length);
 	waitDoingServices(500,0,1);	
 */	length = sprintf(msg_buf,"AT+RESET");
 	send_data(msg_buf,length);
-	waitDoingServices(5000,0,1);
+	waitDoingServices(5000,1);
     //uartDisable();
 }
 
@@ -1505,7 +1519,7 @@ void openUart()
 			settings.uart_baudrate = uart_baudrate[i];
 			uart1SetBaudRate(uart_baudrate[i]);
 			send_data(msg,sizeof(msg));
-			waitDoingServices(500,got_ok,1);
+			waitDoingServicesInterruptible(500,got_ok,1);
 			if(got_ok) break;
 		}
 		if(!got_ok){
@@ -1949,6 +1963,7 @@ void main()
 	radioQueueInit();
 	// initialise the Radio Regisers
 	dex_RadioSettings();
+
 	MCSM0 &= 0x34;			// calibrate every fourth transition to and from IDLE.
 	MCSM1 = 0x00;			// after RX go to idle, we don't transmit
 	//MCSM2 = 0x08;
@@ -1962,11 +1977,10 @@ void main()
 	//initialise Anlogue Input 0
 	P0INP = 0x1;
 	//delay for 30 seconds to get putty up.
-	waitDoingServices(10000,0,1);
+	waitDoingServices(5000,1);
 	printf_fast("Starting xBridge v%s\r\nRetrieving Settings\r\n", VERSION);
 	memcpy(&settings, (__xdata *)FLASH_SETTINGS, sizeof(settings));
 	//detect if we have xBridge or classic hardware
-	
 	//turn on HM-1x using P1_0
 	setDigitalOutput(10,HIGH);
 	//if P1_2 goes high in 1s, it is xBridge
@@ -1980,7 +1994,7 @@ void main()
 		setFlag(XBRIDGE_HW,0);
 	}
 	//wait 1 seconds, just in case it needs to settle.
-	waitDoingServices(1000,0,0);
+	waitDoingServices(1000,0);
 	//initialise the command buffer
 	init_command_buff(&command_buff);
 	// Open the UART and set it up for comms to HM-10
@@ -2046,7 +2060,7 @@ void main()
 		sendBeacon();
 		doServices(0);
 		//wait 5 seconds
-		waitDoingServices(10000, dex_tx_id_set, 1);
+		waitDoingServicesInterruptible(10000, dex_tx_id_set, 1);
 	}
 	// if we still have settings to save (no TXID set), save them
 	if(save_settings)
@@ -2092,7 +2106,7 @@ void main()
 				if(send_debug)
 					printf_fast("%lu - packet waiting\r\n", getMs());
 				setDigitalOutput(10,HIGH);
-				waitDoingServices(1000, ble_connected,0);
+				waitDoingServicesInterruptible(1000, ble_connected,0);
 			}
 			if(ble_connected) {
 				//printf_fast("%lu - ble_connected: %u, sent_beacon: %u\r\n", getMs(), ble_connected, sent_beacon);
@@ -2121,7 +2135,7 @@ void main()
 				if(send_debug)
 					printf_fast("%lu - waiting for ack\r\n", getMs());
 				// use "do_sleep" as break flag so we don't need to wait a full 10 seconds if we get the ack early
-				waitDoingServices(10000, do_sleep, 1);
+				waitDoingServicesInterruptible(10000, do_sleep, 1);
 				if (do_sleep) { //we got an ack - but let's see if there is more to write...
 					if (send_debug)
 						printf_fast("%lu got ack for read position %d while write is %d, incrementing read\r\n", getMs(), Pkts.read, Pkts.write);
@@ -2236,7 +2250,7 @@ void main()
 			ble_connected = 0;
 			//printf_fast("%lu - ble on\r\n", getMs());
 			setDigitalOutput(10,HIGH);
-			waitDoingServices(250,0,1);
+			waitDoingServices(250,1);
 		}
 	}
 }

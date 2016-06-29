@@ -144,6 +144,7 @@ static volatile BIT got_ok;				// flag indicating we got OK from the HM-1x
 static volatile BIT do_leds;			// flag indicating to NOT show LEDs
 static volatile BIT send_debug;			// flag indicating to send debug output
 static volatile BIT sleep_ble;			// flag indicating to sleep the BLE module (power down in sleep)
+static volatile BIT packet_waiting;     // flag indicating that there is a packet in queue waiting to be sent via bluetooth
 static volatile uint32 dly_ms = 0;
 static volatile uint32 pkt_time = 0;
 // these flags will be stored in Flash
@@ -1185,16 +1186,14 @@ void updateLeds()
 		else {
 			LED_YELLOW(0);
 		}
-		/**
-		if(dex_tx_id_set)
+		if(packet_waiting)
 		{
-			if(do_leds) LED_RED(radioQueueRxCurrentPacket());
+			if(do_leds) LED_RED(getMs() & 0x200);
 		} 
 		else 
 		{
-			if(do_leds) LED_RED((getMs() & 0x0000FF00) == 0x1300);
+			LED_RED(0);
 		}
-		**/
 	}
 }
 
@@ -1964,6 +1963,9 @@ void main()
 	// initialise the Radio Regisers
 	dex_RadioSettings();
 
+	do_sleep = 0;
+	packet_waiting = 0;
+
 	MCSM0 &= 0x34;			// calibrate every fourth transition to and from IDLE.
 	MCSM1 = 0x00;			// after RX go to idle, we don't transmit
 	//MCSM2 = 0x08;
@@ -2087,20 +2089,21 @@ void main()
 			if(ble_connected) 
 //				printf_fast("\r\nSending Beacon\r\n");
 				sendBeacon();
-			continue;
+			if (Pkts.read == Pkts.write) // only continue if there are no packets in the queue
+				continue;
 		}
 
 		LED_GREEN(0);
 		// ok, we got a packet
 		if(send_debug)
 			printf_fast("%lu - got pkt, stored at position %d\r\n", getMs(), Pkts.write);
+		packet_waiting = 1;
 		// so increment write position for next round...
 		Pkts.write = (Pkts.write + 1) & (DXQUEUESIZE-1);
 		if (Pkts.read == Pkts.write)
 			Pkts.read = (Pkts.read + 1) & (DXQUEUESIZE-1); //overflow in ringbuffer, overwriting oldest entry, thus move read one up
 		// when we send a packet, we wait until we get an ACK to put us to sleep.
 		// we only wait a maximum of two minutes
-		LED_RED(1); //we got a packet - so show it...
 		while (!do_sleep){
 			while(!ble_connected && (getMs() - pkt_time)<120000) {
 				if(send_debug)
@@ -2142,6 +2145,8 @@ void main()
 					Pkts.read = (Pkts.read + 1) & (DXQUEUESIZE-1); //increment read position since we got an ack for the last package
 					if (Pkts.read != Pkts.write) { // more data available, skip sleeping
 						do_sleep = 0;
+					} else {
+						packet_waiting = 0;
 					}
 				} else {
 					// if we have sent a number of packets and still have not got an ACK, time to sleep.  We keep trying for up to 3 minutes.
@@ -2153,7 +2158,6 @@ void main()
 				}
 			}
 		}
-		LED_RED(0);
 
 		// can't safely sleep if we didn't get an ACK, or if we are already sleeping!
 		if (do_sleep && !is_sleeping)
@@ -2167,7 +2171,7 @@ void main()
 			uint8 savedP0DIR = P0DIR;
 			uint8 savedP1SEL = P1SEL;
 			uint8 savedP1DIR = P1DIR;
-			if (usb_connected) {
+			if (usb_connected && !sleep_ble) {
 				if (send_debug)
 					printf_fast("%lu don't sleep since USB is connected...", getMs());
 				do_sleep = 0; //don't sleep

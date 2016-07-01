@@ -92,7 +92,7 @@ elsewhere.  This small bridge rig should be kept nearby the T1D at all times.
 #include <uart1.h>
 
 //define the xBridge Version
-#define VERSION ("2.43")
+#define VERSION ("2.44")
 //define the FLASH_TX_ID address.  This is the address we store the Dexcom TX ID number in.
 //#define FLASH_TX_ID		(0x77F8)
 //define the DEXBRIDGE_FLAGS address.  This is the address we store the xBridge flags in.
@@ -457,7 +457,7 @@ void radioMacEventHandler(uint8 event) // called by the MAC in an ISR
         radioMacRx(radioQueueRxPacket[radioQueueRxInterruptIndex], randomTxDelay());
         return;
     }
-*/    else if (event == RADIO_MAC_EVENT_RX)
+*/	else if (event == RADIO_MAC_EVENT_RX)
     {
         uint8 XDATA * currentRxPacket = radioQueueRxPacket[radioQueueRxInterruptIndex];
 
@@ -1869,7 +1869,7 @@ int get_packet(Dexcom_packet* pPkt)
 void LineStateChangeCallback(uint8 state)
 {
 	//LED_YELLOW(state & ACM_CONTROL_LINE_DTR);
-	usb_connected = state & ACM_CONTROL_LINE_DTR;
+	usb_connected = state & do_leds & ACM_CONTROL_LINE_DTR;
 }
 
 //extern void basicUsbInit();
@@ -1902,8 +1902,11 @@ void main()
 	setDigitalInput(12,PULLED);
 	//initialise Anlogue Input 0
 	P0INP = 0x1;
+	// turn Red LED on to let people know we have started and have power.
+	LED_RED(1);
 	//delay for 30 seconds to get putty up.
 	waitDoingServices(10000,0,1);
+	LED_RED(0);
 	printf_fast("Starting xBridge v%s\r\nRetrieving Settings\r\n", VERSION);
 	memcpy(&settings, (__xdata *)FLASH_SETTINGS, sizeof(settings));
 	//detect if we have xBridge or classic hardware

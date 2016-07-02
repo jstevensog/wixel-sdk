@@ -132,6 +132,7 @@ XDATA uint32 wake_before_packet = 20000;	// ms to wake before a packet is expect
 #define DX_PKT_INTERVAL ((uint32)(300000))		// 5*60*1000 ms
 
 static volatile BIT do_sleep = 0;		// indicates we should go to sleep between packets
+static volatile BIT got_ack = 0;		// indicates if we got an ack during the last do_services
 static volatile BIT is_sleeping = 0;	// flag indicating we are sleeping.
 static volatile BIT usb_connected;		// indicates DTR set on USB.  Meaning a terminal program is connected via USB for debug.
 static volatile BIT sent_beacon;		// indicates if we have sent our current dex_tx_id to the app.
@@ -145,11 +146,11 @@ static volatile BIT got_ok;				// flag indicating we got OK from the HM-1x
 static volatile BIT do_leds;			// flag indicating to NOT show LEDs
 static volatile BIT send_debug;			// flag indicating to send debug output
 static volatile BIT sleep_ble;			// flag indicating to sleep the BLE module (power down in sleep)
-static volatile BIT packet_waiting;     // flag indicating that there is a packet in queue waiting to be sent via bluetooth
+static volatile BIT scanning_for_packet;// flag indicating that we are scanning for a packet
 static volatile uint32 dly_ms = 0;
 static volatile uint32 pkt_time = 0;
 // these flags will be stored in Flash
-static volatile BIT initialised;					// flag to indicate we have passed the initialisation.
+static volatile BIT initialised;		// flag to indicate we have passed the initialisation.
 static uint8 sleep_mode = 0;
 static uint8 save_IEN0;
 static uint8 save_IEN1;
@@ -181,8 +182,8 @@ typedef struct _Dexcom_packet
 
 #define DXQUEUESIZE 64 //only use 2^x values here!
 typedef struct {
-	uint8 read;
-	uint8 write;
+	volatile uint8 read;
+	volatile uint8 write;
 	Dexcom_packet buffer[DXQUEUESIZE];
 } Dexcom_fifo;
 
@@ -551,7 +552,7 @@ void radioMacEventHandler(uint8 event) // called by the MAC in an ISR
 Note:  These functions and variables are taken direct from the time library, and have been slightly modified
 and added to.  This is preferable to modifying the time library source code directly.
 */
-DATA volatile uint32 timeMs;
+PDATA volatile uint32 timeMs;
 //PDATA volatile uint32 time_since_pkt;
 
 ISR(T4, 0)
@@ -576,9 +577,10 @@ precisely how long it has been since the last packet was received, even during s
 */
 void addMs(uint32 addendum)
 {
+	uint8 oldT4IE = T4IE;   // store state of timer 4 interrupt (active/inactive?)
 	T4IE = 0;				// disable timer 4 interrupt
 	timeMs += addendum; 	// add addendum to timeMs
-	T4IE = 1;				// restore timer 4 interrupt to enabled original state
+	T4IE = oldT4IE;			// restore timer 4 interrupt to it's original state
 }
 
 void timeInit()
@@ -941,21 +943,13 @@ void switchToRCOSC(void)
 uint32 calcSleep() {
 	uint32 diff = 0;
 	// don't sleep until we got out first packet
-	if (!pkt_time) {
-		if (send_debug) printf_fast("calcSleep returning 0, since pkt_time is 0\r\n");
-		return 0;
-	}
+	if (!pkt_time) return 0;
 	// if there was a packet before
 	diff = getMs() - pkt_time;		// how many ms ago was the last packet received?
-	if (send_debug) printf_fast("calcSleep diff is %lu\r\n", diff);
 	while (diff > DX_PKT_INTERVAL)	// apparently we missed one or more packets since it's been more that 5 minutes
 		diff -= DX_PKT_INTERVAL;	// so subtract 5 minutes until we get a sane range
-	if (send_debug) printf_fast("calcSleep diff is updated to %lu\r\n", diff);
-	if (diff > (DX_PKT_INTERVAL - wake_before_packet)) {
-		if (send_debug) printf_fast("calcSleep returning 0, since diff is %lu\r\n", diff);
+	if (diff > (DX_PKT_INTERVAL - wake_before_packet))
 		return 0;					// we should be waiting for a packet - so don't sleep
-	}
-	if (send_debug) printf_fast("calcSleep returning %lu with diff=%lu\r\n", (DX_PKT_INTERVAL - diff - wake_before_packet), diff);
 	return (DX_PKT_INTERVAL - diff - wake_before_packet);
 }
 
@@ -1155,34 +1149,22 @@ void goToSleep () { //scratched parameter since it's always 5 min less wake_befo
 
 void updateLeds()
 {
-	if (do_sleep)
-	{
-		if(is_sleeping && do_leds)
-		{
-			LED_YELLOW((getMs()&0x00000F00) == 0x100);
-		}
-	} 
-	else 
-	{
-		if(getFlag(SLEEP_BLE)){
-			if (do_leds) {
-				LED_YELLOW(ble_connected);
-			}
-			else {
-				LED_YELLOW(0);
-			}
-		}
-		else {
-			LED_YELLOW(0);
-		}
-		if(packet_waiting)
-		{
-			if(do_leds) LED_RED(getMs() & 0x200);
-		} 
-		else 
-		{
-			LED_RED(0);
-		}
+	if (!initialised || !do_leds) return; //only start normal LED operation after system startup
+
+	if (ble_connected) {	// BLE is currently connected
+		LED_YELLOW(1);
+	} else if (P1_0) {		// BLE module is powered up
+		LED_YELLOW(getMs() & 0x100);
+	} else {				// BLE module is powered down
+		LED_YELLOW(0);
+	}
+
+	if (scanning_for_packet) { 				// if we are currently looking for a packet
+		LED_RED(getMs() & 0x100);
+	} else if (Pkts.read != Pkts.write) { 	// if there are packets in the queue to be sent
+		LED_RED(getMs() & 0x400);
+	} else {								// no packets in queue and not looking for any
+		LED_RED(0);
 	}
 }
 
@@ -1251,16 +1233,16 @@ void send_data( uint8 *msg, uint8 len)
 	}
 	while(uart1TxAvailable()<255) waitDoingServices(20,1);
 	if(usb_connected) {
-		if(send_debug)
-			printf_fast("Sending: ");
+//		if(send_debug)
+//			printf_fast("Sending: ");
 		while(usbComTxAvailable() < len) {};
 		for(i=0; i < len; i++)
 		{
 			usbComTxSendByte(msg[i]);
 		}
 		while(usbComTxAvailable()<128) waitDoingServices(20,1);
-		if(send_debug)
-			printf_fast("\r\nResponse: ");
+//		if(send_debug)
+//			printf_fast("\r\nResponse: ");
 	}
 }
 
@@ -1343,7 +1325,7 @@ uint8 batteryPercent(uint16 val){
 	if((val > (settings.battery_maximum + 23)) && (val < 2047)) {
 		//save the new maximum value with an offset of approx 1.2% (0.05V)
 		settings.battery_maximum = val;
-		save_settings = 1;;
+		save_settings = 1;
 	}
 	// otherwise calculate the battery % and return.
 	pct = ((pct - settings.battery_minimum)/(settings.battery_maximum - settings.battery_minimum)) * 100;
@@ -1568,10 +1550,10 @@ int doCommand()
 		0x02, 0xF0
 	*/
 	// if do_sleep is set already, don't process it
-	if(command_buff.commandBuffer[0] == 0x02 && command_buff.commandBuffer[1] == 0xF0 && !do_sleep) {
+	if(command_buff.commandBuffer[0] == 0x02 && command_buff.commandBuffer[1] == 0xF0 && !got_ack) {
 		if(send_debug)
 			printf_fast("Processing ACK packet\r\n");
-		do_sleep = 1;
+		got_ack = 1;
 		init_command_buff(&command_buff);
 		return(0);
 	}
@@ -1667,8 +1649,8 @@ int controlProtocolService()
 			b = uart1RxReceiveByte();
 		}
 		//putchar(b);
-		if(send_debug)
-			printf_fast("%c",b);
+//		if(send_debug)
+//			printf_fast("%c",b);
 		command_buff.commandBuffer[command_buff.nCurReadPos] = b;
 		command_buff.nCurReadPos++;
 		//printf_fast("%x\r\n", command_buff.commandBuffer[0]);
@@ -1902,7 +1884,7 @@ int get_packet(Dexcom_packet* pPkt)
 			case -1:
 			{
 			// cancelled by inbound data on USB (command), or channel invalid.
-				//printf_fast("leaving getPacket\r\n");
+				printf_fast("leaving getPacket\r\n");
 				return 0;
 			}
 			case -2:
@@ -1930,73 +1912,54 @@ void LineStateChangeCallback(uint8 state)
 
 void main()
 {   
-	uint8 i = 0;
-	uint16 rpt_pkt=0;
 	XDATA uint32 tmp_ms = 0;
-	systemInit();
-	//initialise the USB port
-	usbInit();
-	//initialise the dma channel for working with flash.
-	dma_Init();
-	//initialise sleep library
-	sleepInit();
-	//initialise the radio_mac library
-	radioQueueInit();
-	// initialise the Radio Regisers
-	dex_RadioSettings();
-
-	do_sleep = 0;
-	packet_waiting = 0;
+	systemInit();			// initialize the system
+	usbInit();				// initialize the USB port
+	dma_Init();				// initialize the DMA channel for working with flash.
+	sleepInit();			// initialize sleep library
+	radioQueueInit();		// initialize the radio_mac library
+	dex_RadioSettings();	// initialize the Radio Registers
 
 	MCSM0 &= 0x34;			// calibrate every fourth transition to and from IDLE.
 	MCSM1 = 0x00;			// after RX go to idle, we don't transmit
 	//MCSM2 = 0x08;
 	MCSM2 = 0x17;			// terminate receiving on drop of carrier, but keep it up when packet quality is good.
-	// implement the USB line State Changed callback function.  
-	usbComRequestLineStateChangeNotification(LineStateChangeCallback);
-	//configure the P1_2 and P1_3 IO pins
-	//makeAllOutputs(LOW);
-	setPort1PullType(LOW);
-	setDigitalInput(12,PULLED);
-	//initialise Anlogue Input 0
-	P0INP = 0x1;
-	//delay for 30 seconds to get putty up.
-	waitDoingServices(5000,1);
+
+	usbComRequestLineStateChangeNotification(LineStateChangeCallback);	// implement the USB line State Changed callback function.
+
+	setPort1PullType(LOW);	// configure the P1_2 and P1_3 IO pins
+	setDigitalInput(12, PULLED);
+	P0INP = 0x1;			// initialize analogue Input 0
+
+	LED_RED(1);
+	waitDoingServices(5000, 0);	//delay for 5 seconds to get a serial terminal up for debugging.
+	LED_RED(0);
+
 	printf_fast("Starting xBridge v%s\r\nRetrieving Settings\r\n", VERSION);
 	memcpy(&settings, (__xdata *)FLASH_SETTINGS, sizeof(settings));
+
 	//detect if we have xBridge or classic hardware
-	//turn on HM-1x using P1_0
-	setDigitalOutput(10,HIGH);
-	//if P1_2 goes high in 1s, it is xBridge
+	setDigitalOutput(10, HIGH);	//turn on HM-1x using P1_0
+
 	tmp_ms = getMs();
-	while (getMs() < tmp_ms + 1000) {
-//		waitDoingServices(50,0,1);
-//		printf_fast("P1_2 is %u\r\n",P1_2);
-		if(P1_2) break;
-	}
-	if(!P1_2) {
-		setFlag(XBRIDGE_HW,0);
-	}
-	//wait 1 seconds, just in case it needs to settle.
-	waitDoingServices(1000,0);
-	//initialise the command buffer
-	init_command_buff(&command_buff);
-	// Open the UART and set it up for comms to HM-10
-	openUart();
-	//configure the bluetooth module
-	//if we haven't written a 0 into the appropriate flag...
-	if(getFlag(BLE_INITIALISED)) { 
-		//configure the BT module
-		configBt();
-		// set the flag to 0
-		setFlag(BLE_INITIALISED, 0);
-		//set up the value for writing to flash
-		save_settings = 1;
+	while (getMs() < tmp_ms + 1000) if(P1_2) break;	//if P1_2 goes high in 1s, it is xBridge
+	if(!P1_2) setFlag(XBRIDGE_HW, 0);
+
+	waitDoingServices(1000, 0);			// wait 1 seconds, just in case it needs to settle.
+	init_command_buff(&command_buff);	// initialize the command buffer
+
+	openUart();							// Open the UART and set it up for comms to HM-10
+
+	// configure the bluetooth module
+	if(getFlag(BLE_INITIALISED)) {		// if we haven't written a 0 into the appropriate flag...
+		configBt();						// configure the BT module
+		setFlag(BLE_INITIALISED, 0);	// set the flag to 0
+		save_settings = 1;				// set up the value for writing to flash
 	}
 	//printf_fast("battery_minimum: %u, battery_maximum: %u\r\n", battery_minimum, battery_maximum);
 	//if they are 0xFFFF, then they haven't been stored in flash, set them to something reasonable.
 	if(settings.battery_minimum == 0xFFFF || settings.battery_maximum == 0xFFFF) {
-		if(getFlag(XBRIDGE_HW)) {
+		if (getFlag(XBRIDGE_HW)) {
 			printf_fast("xBridge hardware circuit selected\r\n");
 			setFlag(SLEEP_BLE, 1);
 			setFlag(DONT_IGNORE_BLE_STATE, 1);
@@ -2013,12 +1976,11 @@ void main()
 		sleep_ble = getFlag(SLEEP_BLE);
 		send_debug = getFlag(SEND_DEBUG);
 	}
-	// measure the initial battery capacity.
-	battery_capacity = batteryPercent(adcRead(0 | ADC_REFERENCE_INTERNAL));
-	//printf_fast("%lu - battery_capacity: %u\r\n", battery_capacity);
-	// we haven't sent a beacon packet yet, so say so.
-	sent_beacon = 0;
+
+	battery_capacity = batteryPercent(adcRead(0 | ADC_REFERENCE_INTERNAL));	// measure the initial battery capacity.
+
 	LED_GREEN(1);
+	sent_beacon = 0;
 	last_beacon = getMs();
 	// read the flash stored value of our TXID.
 	// we do this by reading the address we are interested in directly, cast as a pointer to the 
@@ -2032,114 +1994,88 @@ void main()
 	// wixel a TXID packet.
 	initialised = 1;
 
-	// initialize to empty queue
-	Pkts.read = 0;
-	Pkts.write = 0;
-	while(settings.dex_tx_id == 0) {
-		if(send_debug)
-			printf_fast("No dex_tx_id.  Sending beacon.\r\n");
+	// set my transmitter's tx id... no waiting for beacon on reflash
+	settings.dex_tx_id = 6734410;
+
+	while (settings.dex_tx_id == 0) {
+		if (send_debug) printf_fast("No dex_tx_id.  Sending beacon.\r\n");
 		// wait until we have a BLE connection
-		while(!ble_connected) doServices(1);
-		//send a beacon packet
-		sendBeacon();
+		while (!ble_connected) doServices(1);
+		sendBeacon(); //send a beacon packet
 		doServices(0);
-		//wait 5 seconds
-		waitDoingServicesInterruptible(10000, dex_tx_id_set, 1);
+		waitDoingServicesInterruptible(5000, dex_tx_id_set, 1); //wait 5 seconds
 	}
+
 	// if we still have settings to save (no TXID set), save them
 	if(save_settings)
 		saveSettingsToFlash();
+
 	// retrieve the show_leds and send_debug settings
 	sleep_ble = getFlag(SLEEP_BLE);
 	do_leds = getFlag(DO_LEDS);
 	send_debug = getFlag(SEND_DEBUG);
 	//radioCalibration();
-	// store the last beacon time
-	//printf_fast("\r\n");
+
 	// MAIN LOOP
 	// initialise the Radio Regisers
 	setRadioRegistersInitFunc(dex_RadioSettings);
 	if(send_debug)
 		printf_fast("looking for %lu (%s)\r\n",settings.dex_tx_id, dexcom_src_to_ascii(settings.dex_tx_id));
-	while (1)
-	{
-//		LED_RED(0);
-//		LED_GREEN(1);
 
-        if (get_packet(&Pkts.buffer[Pkts.write]) == 0) { // if we did not receive a packet
-			//printf_fast("last_beacon: %lu, getMs(): %lu\r", last_beacon, getMs());
-			if(ble_connected) 
-//				printf_fast("\r\nSending Beacon\r\n");
-				sendBeacon();
-			if (Pkts.read == Pkts.write) // only continue if there are no packets in the queue
-				continue;
-		}
+	// initialize to empty queue
+	Pkts.read = 0;
+	Pkts.write = 0;
 
-		LED_GREEN(0);
-		// ok, we got a packet
-		if(send_debug)
+	setDigitalOutput(10, LOW);
+	ble_connected = 0;
+
+	while (1) {
+		scanning_for_packet = 1;
+		if (get_packet(&Pkts.buffer[Pkts.write])) {
 			printf_fast("%lu - got pkt, stored at position %d\r\n", getMs(), Pkts.write);
-		packet_waiting = 1;
-		// so increment write position for next round...
-		Pkts.write = (Pkts.write + 1) & (DXQUEUESIZE-1);
-		if (Pkts.read == Pkts.write)
-			Pkts.read = (Pkts.read + 1) & (DXQUEUESIZE-1); //overflow in ringbuffer, overwriting oldest entry, thus move read one up
-		// when we send a packet, we wait until we get an ACK to put us to sleep.
-		// we only wait a maximum of two minutes
-		while (!do_sleep){
-			while(!ble_connected && ((getMs() - pkt_time) < 60000)) {
-				if(send_debug)
-					printf_fast("%lu - packet waiting for ble connect\r\n", getMs());
-				setDigitalOutput(10,HIGH);
+			// so increment write position for next round...
+			Pkts.write = (Pkts.write + 1) & (DXQUEUESIZE-1);
+			if (Pkts.read == Pkts.write)
+				Pkts.read = (Pkts.read + 1) & (DXQUEUESIZE-1); //overflow in ringbuffer, overwriting oldest entry, thus move read one up
+			do_sleep = 1; // we got a packet, so we are aligned with the 5 minute interval - so go to sleep after sending out packets
+		} else {
+			printf_fast("%lu - did not receive a pkt with %d pkts in queue\r\n", getMs(), (Pkts.write - Pkts.read));
+			do_sleep = 0; // we did not receive a packet, so do not sleep but keep looking for the next one..
+		}
+		scanning_for_packet = 0;
+
+		if (Pkts.read != Pkts.write) { // if we have a packet
+			// we wait up to one minute for BLE connect
+			while (!ble_connected && ((getMs() - pkt_time) < 60000)) {
+				if (send_debug) printf_fast("%lu - packet waiting for ble connect\r\n", getMs());
+				setDigitalOutput(10, HIGH);
 				waitDoingServicesInterruptible(10000, ble_connected, 1);
 			}
-			if(ble_connected) {
-				//printf_fast("%lu - ble_connected: %u, sent_beacon: %u\r\n", getMs(), ble_connected, sent_beacon);
-				// send the data packet
-				uint32 now = getMs();
-				uint32 delay = 0;
-				if(send_debug)
-					printf_fast("%lu sending packet captured at %lu on queue position %d\r\n", now, Pkts.buffer[Pkts.read].ms, Pkts.read);
-				print_packet(&Pkts.buffer[Pkts.read]);
-				//debug_print_packet(&Pkts.buffer[Pkts.read], delay);
-			} else {
-				if(send_debug)
-					printf_fast("%lu - ble connect didn't occur, sleeping\r\n", getMs());
-				do_sleep = 1;
-			}
-			//save settings to flash if we need to
-			if(save_settings)
-				saveSettingsToFlash();
 
-			if (!do_sleep) { //if do_sleep is set, we apparently didn't get a BLE connect, so so skip waiting and go to sleep...
-				// wait 10 seconds, listenting for the ACK.
-				if(send_debug)
-					printf_fast("%lu - waiting for ack\r\n", getMs());
-				// use "do_sleep" as break flag so we don't need to wait a full 10 seconds if we get the ack early
-				waitDoingServicesInterruptible(10000, do_sleep, 1);
-				if (do_sleep) { //we got an ack - but let's see if there is more to write...
-					if (send_debug)
-						printf_fast("%lu got ack for read position %d while write is %d, incrementing read\r\n", getMs(), Pkts.read, Pkts.write);
+			// we got a connection, so send pending packets now - at most for two minutes after the last packet was received
+			while ((Pkts.read != Pkts.write) && ble_connected && ((getMs() - pkt_time) < 120000)) {
+				if(send_debug) printf_fast("%lu sending packet\r\n", getMs());
+				got_ack = 0;
+				print_packet(&Pkts.buffer[Pkts.read]);
+				waitDoingServicesInterruptible(10000, got_ack, 1);
+				if (got_ack) {
+					if (send_debug)	printf_fast("%lu got ack for read position %d while write is %d, incrementing read\r\n", getMs(), Pkts.read, Pkts.write);
 					Pkts.read = (Pkts.read + 1) & (DXQUEUESIZE-1); //increment read position since we got an ack for the last package
-					if (Pkts.read != Pkts.write) { // more data available, skip sleeping
-						do_sleep = 0;
-					} else {
-						packet_waiting = 0;
-					}
-				} else {
-					// if we have sent a number of packets and still have not got an ACK, time to sleep.  We keep trying for up to 3 minutes.
-					if((getMs() - pkt_time) >= 120000) {
-						//sendBeacon();
-						sent_beacon = 0;
-						do_sleep = 1;
-					}
 				}
 			}
 		}
+		// turn off the BLE module
+		setDigitalOutput(10, LOW);
+		ble_connected = 0;
 
-		// can't safely sleep if we didn't get an ACK, or if we are already sleeping!
-		if (do_sleep && !is_sleeping)
-		{
+		// save settings to flash if we need to
+		if(save_settings)
+			saveSettingsToFlash();
+
+		// wait for stuff to settle
+		waitDoingServices(1000, 1);
+
+		if (do_sleep) {
 			// save all Port Interrupts state (enabled/disabled).
 		    uint8 savedPICTL = PICTL;
 			// save port 0 Interrupt Enable state.  This is a BIT value and equates to IEN1.POIE.
@@ -2151,41 +2087,37 @@ void main()
 			uint8 savedP1DIR = P1DIR;
 
 			P1SEL = 0x00;
-			P1DIR =0xff;
-			//printf_fast("%lu - going to sleep\r\n", getMs());
+			P1DIR = 0xff;
 			// clear sent_beacon so we send it next time we wake up.
 			sent_beacon = 0;
-			// turn of the RF Frequency Synthesiser.
+			// turn of the RF Frequency Synthesizer.
 			RFST = 4;   //SIDLE
 			// turn all wixel LEDs on
 			//LED_RED(1);
 			//LED_YELLOW(1);
 			//LED_GREEN(1);
 			// wait 500 ms, processing services.
-			dly_ms=getMs();
-			while((getMs() - dly_ms) <= 500) {
+			dly_ms = getMs();
+			while ((getMs() - dly_ms) <= 500) {
 				// allow the wixel to complete any other tasks.
 				doServices(1);
-				// if we are writing flash rignt now, reset the delay to wait again.
-				if(writing_flash)
+				// if we are writing flash right now, reset the delay to wait again.
+				if (writing_flash)
 					dly_ms=getMs();
 			}
 			// make sure the uart send buffer is empty.
-			while(uart1TxAvailable() < 255);
+			while (uart1TxAvailable() < 255);
+
+			makeAllOutputs(LOW);
 			// turn the wixel LEDS off
 			LED_RED(0);
 			LED_YELLOW(0);
 			LED_GREEN(0);
-			// turn off the BLE module
-			if(sleep_ble){
-				if(send_debug) {
-					printf_fast("turning off BLE\r\n");
-					}
-				setDigitalOutput(10,LOW);
-				ble_connected = 0;
-			}
+
 			radioMacSleep();
 			goToSleep();
+
+			// now we just woke up again...
 			got_packet = 0;
 			radioMacResume();
 			//WDCTL=0x0B;
@@ -2206,13 +2138,13 @@ void main()
 			// Without this, we USBCIF.SUSPENDIF will not get set (the datasheet is incomplete).
 			USBCIE = 0b0111;
 			//LED_GREEN(1);
-			if(send_debug)
+			if (send_debug)
 				printf_fast("%lu - awake!\r\n", getMs());
 			// get the most recent battery capacity
 			battery_capacity = batteryPercent(adcRead(0 | ADC_REFERENCE_INTERNAL));
 			//printf_fast("%lu - battery_capacity: %u\r\n", battery_capacity);
 			init_command_buff(&command_buff);
-			// tell the radio to remain IDLE when the next packet is recieved.
+			// tell the radio to remain IDLE when the next packet is received.
 			MCSM1 = 0;			// after RX go to idle, we don't transmit
 			// watchdog mode??? this will do a reset?
 			//			WDCTL=0x0B;
@@ -2222,8 +2154,6 @@ void main()
 			// power on the BLE module
 			ble_connected = 0;
 			//printf_fast("%lu - ble on\r\n", getMs());
-			setDigitalOutput(10,HIGH);
-			waitDoingServices(250,1);
 		}
 	}
 }

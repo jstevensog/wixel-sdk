@@ -2044,6 +2044,7 @@ void main()
 		}
 		scanning_for_packet = 0;
 
+		//TODO: what happens if we did not receive a packet? pkt_time is still set to the last one - this will make the following checks fail...
 		if (Pkts.read != Pkts.write) { // if we have a packet
 			// we wait up to one minute for BLE connect
 			while (!ble_connected && ((getMs() - pkt_time) < 60000)) {

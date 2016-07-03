@@ -1995,7 +1995,7 @@ void main()
 	initialised = 1;
 
 	// set my transmitter's tx id... no waiting for beacon on reflash
-	settings.dex_tx_id = 6734410;
+	//settings.dex_tx_id = 6734410;
 
 	while (settings.dex_tx_id == 0) {
 		if (send_debug) printf_fast("No dex_tx_id.  Sending beacon.\r\n");

@@ -1152,17 +1152,17 @@ void updateLeds()
 	if (!initialised || !do_leds) return; //only start normal LED operation after system startup
 
 	if (ble_connected) {	// BLE is currently connected
-		LED_YELLOW(1);
+		LED_YELLOW((getMs() & 0x1F0) == 0x040);
 	} else if (P1_0) {		// BLE module is powered up
-		LED_YELLOW(getMs() & 0x100);
+		LED_YELLOW((getMs() & 0x3F0) == 0x040);
 	} else {				// BLE module is powered down
 		LED_YELLOW(0);
 	}
 
 	if (scanning_for_packet) { 				// if we are currently looking for a packet
-		LED_RED(getMs() & 0x100);
+		LED_RED((getMs() & 0x3F0) == 0x040);
 	} else if (Pkts.read != Pkts.write) { 	// if there are packets in the queue to be sent
-		LED_RED(getMs() & 0x400);
+		LED_RED((getMs() & 0x1F0) == 0x040);
 	} else {								// no packets in queue and not looking for any
 		LED_RED(0);
 	}

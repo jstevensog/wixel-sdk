@@ -298,7 +298,8 @@ void sendBeacon(void);
 
 
 // frequency offsets for each channel - seed to 0.
-static uint8 fOffset[NUM_CHANNELS] = {0xCE,0xD5,0xE6,0xE5};
+//static uint8 fOffset[NUM_CHANNELS] = {0xCE,0xD5,0xE6,0xE5};
+static uint8 fOffset[NUM_CHANNELS] = {0x0, 0x0, 0x0, 0x0};
 static uint8 nChannels[NUM_CHANNELS] = { 0, 100, 199, 209 };
 
 
@@ -1569,6 +1570,7 @@ int doCommand()
 			getFlag(SEND_DEBUG),
 			getFlag(DO_LEDS));
 		printf_fast("battery_capacity: %u\r\n", battery_capacity);
+		printf_fast("fOffsets: %x, %x, %x, %x\r\n", fOffset[0], fOffset[1], fOffset[2], fOffset[3]);
 //		printf_fast("MDMCFG4: %x, MDMCFG3: %x\r\n", MDMCFG4,MDMCFG3); 
 //		printf_fast("PKTCTRL1: %x, PKTCTRL0: %x, PKTLEN: %x\r\n", PKTCTRL1, PKTCTRL0, PKTLEN);
 		printf_fast("packet queue size: %d, write pos: %d, read pos: %d\r\n", DXQUEUESIZE, Pkts.write, Pkts.read);

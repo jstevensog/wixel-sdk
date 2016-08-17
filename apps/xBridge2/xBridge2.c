@@ -1142,40 +1142,34 @@ void goToSleep (uint16 seconds) {
 void updateLeds()
 {
 	LED_GREEN( usb_connected & do_leds);
-	if (do_sleep)
-	{
-		if(is_sleeping && do_leds)
+	if(do_leds) {
+		if (do_sleep)
 		{
-			LED_YELLOW((getMs()&0x00000F00) == 0x100);
-		}
-	} 
-	else 
-	{
-		if(getFlag(SLEEP_BLE)){
-			if (do_leds) {
+			if(is_sleeping)
+			{
+				LED_YELLOW((getMs()&0x00000F00) == 0x100);
+			}
+		} 
+		else 
+		{
+			if(getFlag(SLEEP_BLE)){
 				LED_YELLOW(ble_connected);
 			}
-			else {
-				LED_YELLOW(0);
-			}
-		}
-		else {
-			LED_YELLOW(0);
 		}
 		if(dex_tx_id_set)
 		{
-			if(do_leds) {
-				if(got_packet) {
-					LED_RED(radioQueueRxCurrentPacket());
-				}
-				else {
-					LED_RED((getMs() & 0x200) == 0x200);
-				}
+			if(got_packet) {
+				LED_RED(radioQueueRxCurrentPacket());
 			}
 			else {
-				LED_RED(0);
+				LED_RED((getMs() & 0x200) == 0x200);
 			}
+		} else {
+			LED_RED((getMs() & 0x1300) == 0x1300);
 		}
+	} else {
+		LED_RED(0);
+		LED_YELLOW(0);
 	}
 }
 

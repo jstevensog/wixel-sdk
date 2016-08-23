@@ -135,7 +135,6 @@ static volatile BIT do_sleep = 0;		// indicates we should go to sleep between pa
 static volatile BIT got_ack = 0;		// indicates if we got an ack during the last do_services
 static volatile BIT is_sleeping = 0;	// flag indicating we are sleeping.
 static volatile BIT usb_connected;		// indicates DTR set on USB.  Meaning a terminal program is connected via USB for debug.
-static volatile BIT sent_beacon;		// indicates if we have sent our current dex_tx_id to the app.
 static volatile BIT writing_flash;		// indicates if we are writing to flash.
 static volatile BIT ble_sleeping;		// indicates if we have recieved a message from the BLE module that it is sleeping, or if false, it is awake.
 static volatile BIT dex_tx_id_set;		// indicates if the Dexcom Transmitter id (settings.dex_tx_id) has been set.  Set in doServices.
@@ -157,7 +156,6 @@ static uint8 save_IEN1;
 static uint8 save_IEN2;
 
 XDATA uint8 battery_capacity=0;
-XDATA uint32 last_beacon=0;
 XDATA uint32 last_battery=0;
 XDATA uint8 last_channel = 0; // last channel we captured a packet on
 // _Dexcom_packet - Type Definition of a Dexcom Radio packet
@@ -1259,7 +1257,6 @@ void bleConnectMonitor() {
 	if(!(getFlag(DONT_IGNORE_BLE_STATE)))
 	{
 		ble_connected = 1;
-		sent_beacon = 0;
 		return;
 	}
 	// if P1_2 is high, ble_connected is low, and the last_check was low, sav the time and set last_check.
@@ -1274,7 +1271,6 @@ void bleConnectMonitor() {
 	//otherwise, if P1_2 has been high for more than 550ms, we can safely assume we have ble_connected, so say so.
 	} else if (P1_2 && last_check && ((getMs() - timer)>550)) {
 		ble_connected = 1;
-		sent_beacon = 0;
 	}
 }
 // Send a pulse to the BlueTooth module SYS input
@@ -1543,7 +1539,6 @@ int doCommand()
 		// send back the TXID we think we got in response
 		if(send_debug)
 			printf_fast("dex_tx_id: %lu (%s)\r\n", settings.dex_tx_id, dexcom_src_to_ascii(settings.dex_tx_id)); 
-		sent_beacon = 0;
 		return 0;
 	}
 	/* command 0xF0 is an acknowledgement sent by the controlling device of a data packet.
@@ -1688,11 +1683,6 @@ int doServices(uint8 bWithProtocol)
 	updateLeds();
 	usbComService();
 	bleConnectMonitor();
-/*	if(initialised && ble_connected && !sent_beacon) {
-		sent_beacon = 1;
-		sendBeacon();
-	}
-*/
 	if(bWithProtocol)
 		return controlProtocolService();
 	return 1;
@@ -1982,8 +1972,6 @@ void main()
 	battery_capacity = batteryPercent(adcRead(0 | ADC_REFERENCE_INTERNAL));	// measure the initial battery capacity.
 
 	LED_GREEN(1);
-	sent_beacon = 0;
-	last_beacon = getMs();
 	// read the flash stored value of our TXID.
 	// we do this by reading the address we are interested in directly, cast as a pointer to the 
 	// correct data type.
@@ -2042,6 +2030,8 @@ void main()
 			do_sleep = 1; // we got a packet, so we are aligned with the 5 minute interval - so go to sleep after sending out packets
 		} else {
 			printf_fast("%lu - did not receive a pkt with %d pkts in queue\r\n", getMs(), (Pkts.write - Pkts.read));
+			setDigitalOutput(10, HIGH);
+			if (ble_connected) sendBeacon();
 			do_sleep = 0; // we did not receive a packet, so do not sleep but keep looking for the next one..
 		}
 		scanning_for_packet = 0;
@@ -2067,14 +2057,15 @@ void main()
 				}
 			}
 		}
-		// turn off the BLE module
-		setDigitalOutput(10, LOW);
-		ble_connected = 0;
-
 		// save settings to flash if we need to
 		if(save_settings)
 			saveSettingsToFlash();
 
+		if (do_sleep) {
+			// turn off the BLE module
+			setDigitalOutput(10, LOW);
+			ble_connected = 0;
+		}
 		// wait for stuff to settle
 		waitDoingServices(1000, 1);
 
@@ -2091,8 +2082,6 @@ void main()
 
 			P1SEL = 0x00;
 			P1DIR = 0xff;
-			// clear sent_beacon so we send it next time we wake up.
-			sent_beacon = 0;
 			// turn of the RF Frequency Synthesizer.
 			RFST = 4;   //SIDLE
 			// turn all wixel LEDs on

@@ -92,7 +92,7 @@ elsewhere.  This small bridge rig should be kept nearby the T1D at all times.
 #include <uart1.h>
 
 //define the xBridge Version
-#define VERSION ("2.46")
+#define VERSION ("2.47")
 //define the FLASH_TX_ID address.  This is the address we store the Dexcom TX ID number in.
 //#define FLASH_TX_ID		(0x77F8)
 //define the DEXBRIDGE_FLAGS address.  This is the address we store the xBridge flags in.
@@ -1027,7 +1027,6 @@ void goToSleep (uint16 seconds) {
 			boardClockInit();   
 			return;
 		}
-		addMs(sleep_time_ms);
 		WORCTRL |= 0x04; // Reset Sleep Timer, set resolution to 1 clock cycle
 		temp = WORTIME0;
 		while(temp == WORTIME0); // Wait until a positive 32 kHz edge
@@ -1061,13 +1060,7 @@ void goToSleep (uint16 seconds) {
 		// Switch back to high speed
 		boardClockInit();   
 		// add the time we were asleep to ms count
-/*		now = getMs();
-		if(sleep_start_ms > now) {
-			addMs( sleep_time_ms - ((now + 4294967295) - sleep_time_ms));
-		} else {
-			addMs(sleep_time_ms - (now - sleep_start_ms));
-		}
-*/
+		addMs(sleep_time_ms);
 
 	} else {
 		// set Sleep Timer to the lowest resolution (1 second)      
@@ -1092,7 +1085,6 @@ void goToSleep (uint16 seconds) {
 			boardClockInit();   
 			return;
 		}
-		addMs(sleep_time_ms);
 		WOREVT1 = sleep_time >> 8; // Set EVENT0, high byte
 		WOREVT0 = sleep_time; // Set EVENT0, low byte
 
@@ -1128,11 +1120,7 @@ void goToSleep (uint16 seconds) {
 		// Switch back to high speed      
 		boardClockInit(); 
 		// add the time we were asleep to ms count
-/*		if(sleep_start_ms > now) {
-			addMs( sleep_time_ms - ((now + 4294967295) - sleep_time_ms));
-		} else {
-			addMs(sleep_time_ms - (now - sleep_start_ms));
-		} */
+		addMs(sleep_time_ms);
 	}
 //	printf_fast("awake!  getMs is %lu\r\n", getMs());
 //	printf_fast("slept for %lu us, %u s \r\n", sleep_time_ms, sleep_time);

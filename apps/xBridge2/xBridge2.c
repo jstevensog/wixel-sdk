@@ -1288,22 +1288,22 @@ void configBt() {
 	XDATA uint8 length;
 	//uartEnable();
 //	breakBt();
-/*	length = sprintf(msg_buf,"AT+RENEW");
-	send_data(msg_buf,length);
-	delayMs(5000);
-	length = sprintf(msg_buf,"AT+PWRM1");
-	send_data(msg_buf,length);
-	delayMs(1000);
-*/	length = sprintf(msg_buf, "AT+NAMExBridge%02x%02x", serialNumber[0],serialNumber[1]);
-    send_data(msg_buf, length);
-	waitDoingServices(500,1);
-/*	length = sprintf(msg_buf, "AT+RELI1");
-    send_data(msg_buf, length);
-	waitDoingServices(500,0,1);	
-*/	length = sprintf(msg_buf,"AT+RESET");
+	length = sprintf(msg_buf,"AT+RENEW");
 	send_data(msg_buf,length);
 	waitDoingServices(5000,1);
-    //uartDisable();
+	length = sprintf(msg_buf, "AT+NAMExBridge%02x%02x", serialNumber[0],serialNumber[1]);
+	send_data(msg_buf, length);
+	waitDoingServices(500,1);
+	length = sprintf(msg_buf,"AT+PWRM0");
+	send_data(msg_buf,length);
+	waitDoingServices(500,1);
+	length = sprintf(msg_buf,"AT+ADVI0");
+	send_data(msg_buf,length);
+	waitDoingServices(500,1);
+	length = sprintf(msg_buf,"AT+RESET");
+	send_data(msg_buf,length);
+	waitDoingServices(5000,1);
+	//uartDisable();
 }
 
 
@@ -2019,6 +2019,8 @@ void main()
 	setDigitalOutput(10, LOW);
 	ble_connected = 0;
 
+        LED_GREEN(0);
+        
 	while (1) {
 		scanning_for_packet = 1;
 		if (get_packet(&Pkts.buffer[Pkts.write])) {
@@ -2040,23 +2042,24 @@ void main()
 		if (Pkts.read != Pkts.write) { // if we have a packet
 			// we wait up to one minute for BLE connect
 			while (!ble_connected && ((getMs() - pkt_time) < 60000)) {
-				if (send_debug) printf_fast("%lu - packet waiting for ble connect\r\n", getMs());
+//				if (send_debug) printf_fast("%lu - packet waiting for ble connect\r\n", getMs());
 				setDigitalOutput(10, HIGH);
-				waitDoingServicesInterruptible(10000, ble_connected, 1);
+				waitDoingServicesInterruptible(1000, ble_connected, 1);
 			}
 
 			// we got a connection, so send pending packets now - at most for two minutes after the last packet was received
 			while ((Pkts.read != Pkts.write) && ble_connected && ((getMs() - pkt_time) < 120000)) {
-				if(send_debug) printf_fast("%lu sending packet\r\n", getMs());
+//				if(send_debug) printf_fast("%lu sending packet\r\n", getMs());
 				got_ack = 0;
 				print_packet(&Pkts.buffer[Pkts.read]);
-				waitDoingServicesInterruptible(10000, got_ack, 1);
+				waitDoingServicesInterruptible(2000, got_ack, 1);
 				if (got_ack) {
-					if (send_debug)	printf_fast("%lu got ack for read position %d while write is %d, incrementing read\r\n", getMs(), Pkts.read, Pkts.write);
+//					if (send_debug)	printf_fast("%lu got ack for read position %d while write is %d, incrementing read\r\n", getMs(), Pkts.read, Pkts.write);
 					Pkts.read = (Pkts.read + 1) & (DXQUEUESIZE-1); //increment read position since we got an ack for the last package
 				}
 			}
 		}
+
 		// save settings to flash if we need to
 		if(save_settings)
 			saveSettingsToFlash();
@@ -2065,9 +2068,9 @@ void main()
 			// turn off the BLE module
 			setDigitalOutput(10, LOW);
 			ble_connected = 0;
+			// wait for stuff to settle
+			waitDoingServices(1000, 1);
 		}
-		// wait for stuff to settle
-		waitDoingServices(1000, 1);
 
 		if (do_sleep) {
 			// save all Port Interrupts state (enabled/disabled).

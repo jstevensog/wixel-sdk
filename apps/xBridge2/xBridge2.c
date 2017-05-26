@@ -1985,10 +1985,10 @@ void main()
 	initialised = 1;
 
 	// set my transmitter's tx id... no waiting for beacon on reflash
-	//settings.dex_tx_id = 6734410;
+	// settings.dex_tx_id = 0;
 
 	while (settings.dex_tx_id == 0) {
-		if (send_debug) printf_fast("No dex_tx_id.  Sending beacon.\r\n");
+		if (send_debug) printf_fast("No dex_tx_id. Sending beacon.\r\n");
 		// wait until we have a BLE connection
 		while (!ble_connected) doServices(1);
 		sendBeacon(); //send a beacon packet
@@ -2042,19 +2042,19 @@ void main()
 		if (Pkts.read != Pkts.write) { // if we have a packet
 			// we wait up to one minute for BLE connect
 			while (!ble_connected && ((getMs() - pkt_time) < 60000)) {
-//				if (send_debug) printf_fast("%lu - packet waiting for ble connect\r\n", getMs());
+				if (send_debug) printf_fast("%lu - packet waiting for ble connect\r\n", getMs());
 				setDigitalOutput(10, HIGH);
 				waitDoingServicesInterruptible(1000, ble_connected, 1);
 			}
 
 			// we got a connection, so send pending packets now - at most for two minutes after the last packet was received
 			while ((Pkts.read != Pkts.write) && ble_connected && ((getMs() - pkt_time) < 120000)) {
-//				if(send_debug) printf_fast("%lu sending packet\r\n", getMs());
+				if(send_debug) printf_fast("%lu sending packet\r\n", getMs());
 				got_ack = 0;
 				print_packet(&Pkts.buffer[Pkts.read]);
 				waitDoingServicesInterruptible(2000, got_ack, 1);
 				if (got_ack) {
-//					if (send_debug)	printf_fast("%lu got ack for read position %d while write is %d, incrementing read\r\n", getMs(), Pkts.read, Pkts.write);
+					if (send_debug)	printf_fast("%lu got ack for read position %d while write is %d, incrementing read\r\n", getMs(), Pkts.read, Pkts.write);
 					Pkts.read = (Pkts.read + 1) & (DXQUEUESIZE-1); //increment read position since we got an ack for the last package
 				}
 			}

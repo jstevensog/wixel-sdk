@@ -73,7 +73,6 @@ elsewhere.  This small bridge rig should be kept nearby the T1D at all times.
 */
 
 /** Dependencies **************************************************************/
-//#include <wixel.h>
 #include <board.h>
 #include <usb.h>
 #include <usb_com.h>
@@ -84,7 +83,6 @@ elsewhere.  This small bridge rig should be kept nearby the T1D at all times.
 #include <radio_registers.h>
 #include <radio_mac.h>
 #include <random.h>
-//#include <radio_queue.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -145,10 +143,10 @@ static volatile uint32 dly_ms = 0;
 static volatile uint32 pkt_time = 0;
 // these flags will be stored in Flash
 static volatile BIT initialised;					// flag to indicate we have passed the initialisation.
-static uint8 sleep_mode = 0;
-static uint8 save_IEN0;
-static uint8 save_IEN1;
-static uint8 save_IEN2;
+//static uint8 sleep_mode = 0;
+//static uint8 save_IEN0;
+//static uint8 save_IEN1;
+//static uint8 save_IEN2;
 
 
 XDATA uint8 battery_capacity=0;
@@ -248,10 +246,9 @@ unsigned char XDATA dmaDesc[8] = {0x00,0x00,0xDF,0xBE,0x00,0x07,0x20,0x42};
 // forward prototypes
 // prototype for doServices function.
 int doServices(uint8 bWithProtocol);
-// prototype for getSrcValue function
-uint32 getSrcValue(char srcVal);
+
 // prototype for batteryPercent function
-uint8 battteryPercent(uint32 val);
+uint8 batteryPercent(uint16 val);
 // prototype for sendBeacon function
 void sendBeacon(void);
 
@@ -1027,6 +1024,7 @@ void goToSleep (uint16 seconds) {
 			boardClockInit();   
 			return;
 		}
+		addMs(sleep_time_ms);
 		WORCTRL |= 0x04; // Reset Sleep Timer, set resolution to 1 clock cycle
 		temp = WORTIME0;
 		while(temp == WORTIME0); // Wait until a positive 32 kHz edge
@@ -1059,8 +1057,7 @@ void goToSleep (uint16 seconds) {
    
 		// Switch back to high speed
 		boardClockInit();   
-		// add the time we were asleep to ms count
-		addMs(sleep_time_ms);
+
 
 	} else {
 		// set Sleep Timer to the lowest resolution (1 second)      
@@ -1085,6 +1082,7 @@ void goToSleep (uint16 seconds) {
 			boardClockInit();   
 			return;
 		}
+		addMs(sleep_time_ms);
 		WOREVT1 = sleep_time >> 8; // Set EVENT0, high byte
 		WOREVT0 = sleep_time; // Set EVENT0, low byte
 
@@ -1120,7 +1118,11 @@ void goToSleep (uint16 seconds) {
 		// Switch back to high speed      
 		boardClockInit(); 
 		// add the time we were asleep to ms count
-		addMs(sleep_time_ms);
+		/*		if(sleep_start_ms > now) {
+			addMs( sleep_time_ms - ((now + 4294967295) - sleep_time_ms));
+		} else {
+			addMs(sleep_time_ms - (now - sleep_start_ms));
+		} */
 	}
 //	printf_fast("awake!  getMs is %lu\r\n", getMs());
 //	printf_fast("slept for %lu us, %u s \r\n", sleep_time_ms, sleep_time);
@@ -1313,16 +1315,16 @@ uint8 batteryPercent(uint16 val){
 	if(send_debug)
 		printf_fast_f("batteryPercent val: %f\r\n", pct);
 	// if val is >100 (ADC 0.217V) and < battery_minimum...
-	if((val < (settings.battery_minimum - 23)) && (val >settings.battery_minimum - 200)) {
+	if((val < (settings.battery_minimum - 23)) && (val > settings.battery_minimum - 200)) {
 		//save the new minimum value with an offset of approx 1.2% (0.05V)
 		settings.battery_minimum = val;
 		save_settings = 1;
 	}
-	// if val is <2047 (ADC maximum 1.2V) and > battery_maximum....
-	if((val > (settings.battery_maximum + 23)) && (val < 2047)) {
+	// if val is maximum + ~10% (ADC maximum 1.2V) and > battery_maximum....
+	if( (!P2_4) && (val > (settings.battery_maximum + 23)) && (val < settings.battery_maximum + 200 || settings.battery_maximum == BATTERY_MAXIMUM)) {
 		//save the new maximum value with an offset of approx 1.2% (0.05V)
 		settings.battery_maximum = val;
-		save_settings = 1;;
+		save_settings = 1;
 	}
 	// otherwise calculate the battery % and return.
 	pct = ((pct - settings.battery_minimum)/(settings.battery_maximum - settings.battery_minimum)) * 100;
@@ -1538,6 +1540,7 @@ int doCommand()
 		init_command_buff(&command_buff);
 		return(0);
 	}
+	// 's' command for status
 	if(command_buff.commandBuffer[0] == 0x53 || command_buff.commandBuffer[0] == 0x73) {
 		printf_fast("Processing Status Command\r\nxBridge v%s\r\n", VERSION);
 		printf_fast("dex_tx_id: %lu (%s)\r\n", settings.dex_tx_id, dexcom_src_to_ascii(settings.dex_tx_id));
@@ -1556,6 +1559,7 @@ int doCommand()
 //		printf_fast("PKTCTRL1: %x, PKTCTRL0: %x, PKTLEN: %x\r\n", PKTCTRL1, PKTCTRL0, PKTLEN);
 		printf_fast("current ms: %lu\r\n", getMs());
 	}
+	// 'd' command for debug output toggle
 	if(command_buff.commandBuffer[0] == 0x44 || command_buff.commandBuffer[0] == 0x64) {
 		setFlag(SEND_DEBUG,!getFlag(SEND_DEBUG));
 		saveSettingsToFlash();
@@ -1565,6 +1569,7 @@ int doCommand()
 		else
 			printf_fast("debug output off\r\n");
 	}
+	// 'b' command for toggle of powering down the BLE module
 	if(command_buff.commandBuffer[0] == 0x42 || command_buff.commandBuffer[0] == 0x62) {
 		setFlag(SLEEP_BLE,!getFlag(SLEEP_BLE));
 		saveSettingsToFlash();
@@ -1574,6 +1579,7 @@ int doCommand()
 		else
 			printf_fast("BLE Sleeping off\r\n");
 	}
+	// 'l' command to toggle LEDs.
 	if(command_buff.commandBuffer[0] == 0x4C || command_buff.commandBuffer[0] == 0x6C) {
 		setFlag(DO_LEDS,!getFlag(DO_LEDS));
 		saveSettingsToFlash();
@@ -1582,6 +1588,19 @@ int doCommand()
 			printf_fast("LEDs are on\r\n");
 		else
 			printf_fast("LEDs are off\r\n");
+	}
+	// 'p' command for resetting the Battery Limit values to defaults
+	if(command_buff.commandBuffer[0] == 0x4C || command_buff.commandBuffer[0] == 0x6C) {
+		if(getFlag(XBRIDGE_HW)) {
+			settings.battery_maximum = BATTERY_MAXIMUM;
+			settings.battery_minimum = BATTERY_MINIMUM;
+		}
+		else {
+			settings.battery_maximum = BATTERY_MAXIMUM_CLASSIC;
+			settings.battery_minimum = BATTERY_MINIMUM_CLASSIC;
+		}
+		saveSettingsToFlash();
+		printf_fast("Reseting Battery Limits to Defaults\r\n");
 	}
 	if(commandBuffIs("OK")) {
 		got_ok = 1;
@@ -2044,6 +2063,8 @@ void main()
 		LED_RED(0);
 		if(send_debug)
 			printf_fast("%lu - got pkt\r\n", getMs());
+		// get the most recent battery capacity
+		battery_capacity = batteryPercent(adcRead(0 | ADC_REFERENCE_INTERNAL));
 		while (!do_sleep){
 			while(!ble_connected && (getMs() - pkt_time)<120000) {
 				if(send_debug)
@@ -2154,8 +2175,6 @@ void main()
 			//LED_GREEN(1);
 			if(send_debug)
 				printf_fast("%lu - awake!\r\n", getMs());
-			// get the most recent battery capacity
-			battery_capacity = batteryPercent(adcRead(0 | ADC_REFERENCE_INTERNAL));
 			//printf_fast("%lu - battery_capacity: %u\r\n", battery_capacity);
 			init_command_buff(&command_buff);
 			// tell the radio to remain IDLE when the next packet is recieved.

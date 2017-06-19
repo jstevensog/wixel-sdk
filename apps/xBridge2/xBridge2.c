@@ -920,12 +920,14 @@ uint32 calcSleep(uint16 seconds) {
 	XDATA uint32 less = 0;
 	diff = seconds;
 //	printf_fast("\r\ndiff: %lu\r\n", diff);
-	diff = diff * 1000;
+	diff = (diff * 1000) - (last_channel * 500);
 	//now = diff;
 	//printf_fast("\r\ndiff * 1000: %lu\r\n", diff);
 	less = getMs() - pkt_time;
-	if ( less > 300000 )
-		less -= 4294967295;
+//	if ( less > 300000 )
+		//less -= 4294967295;
+	while( less > 300000 )
+		less -= 300000;
 	diff = diff - less;
 //	printf_fast("\r\ndiff - getMs-pkt_time: %lu\r\n", diff);
 //	diff = diff/1000;
@@ -941,188 +943,182 @@ void goToSleep (uint16 seconds) {
     unsigned char temp;
 	//uint16 sleep_time = 0;
 	unsigned short sleep_time = 0;
+	unsigned short this_sleep_time = 10;
 	uint32 sleep_time_ms = 0;
-//	XDATA uint32 sleep_start_ms = 0;
-//	XDATA uint32 addendum = 0;
-//	XDATA uint32 now = 0;
-	//uint32 diff = 0;
-	//uint32 now = 0;
 	//initialise sleep library
 	sleepInit();
 
     // The wixel docs note that any high output pins consume ~30uA
     makeAllOutputs(LOW);
-	//printf_fast("\r\nseconds: %u, sleep_time: %u, now-pkt_time: %lu\r\n", seconds, sleep_time, (getMs()-pkt_time));
-	//sleep_time_ms = calcSleep(seconds);
 	while(usb_connected && (usbComTxAvailable() < 128)) {
 		usbComService();
 	}
 	is_sleeping = 1;
-
-	if(!usb_connected)
+	//calculate the time we will sleep in total.
+	sleep_time_ms = calcSleep(seconds);
+	sleep_time = (unsigned short)(sleep_time_ms/1000);
+	// we wake up every 10 seconds to recalibrate the RCOSC.  
+	//The first time may be less than 10 seconds, in case we calculate value that is not wholey divisible by 10.
+	while(sleep_time > 0)		
 	{
-		unsigned char storedDescHigh, storedDescLow;
-		BIT	storedDma0Armed;
-		unsigned char storedIEN0, storedIEN1, storedIEN2;
-		disableUsbPullup();
-		usbDeviceState = USB_STATE_DETACHED;
-		// disable the USB module
-		SLEEP &= ~(1<<7); // Disable the USB module (SLEEP.USB_EN = 0).
-		// sleep power mode 2 is incompatible with USB - as USB registers lose state in this mode.
-
-   
-		//desired_event0 = seconds;
-		
-		// set Sleep Timer to the lowest resolution (1 second)      
-		WORCTRL |= 0x03; 
-		// must be using RC OSC before going to PM2
-		switchToRCOSC();
-		
-		// Following DMA code is a workaround for a bug described in Design Note
-		// DN106 section 4.1.4 where there is a small chance that the sleep mode
-		// bits are faulty set to a value other than zero and this prevents the
-		// processor from waking up correctly (appears to hang)
-		
-		// Store current DMA channel 0 descriptor and abort any ongoing transfers,
-		// if the channel is in use.
-		storedDescHigh = DMA0CFGH;
-		storedDescLow = DMA0CFGL;
-		storedDma0Armed = DMAARM & 0x01;
-		DMAARM |= 0x81; // Abort transfers on DMA Channel 0; Set ABORT and DMAARM0
-		// Update descriptor with correct source.
-		dmaDesc[0] = ((unsigned int)& PM2_BUF) >> 8;
-		dmaDesc[1] = (unsigned int)& PM2_BUF;
-		// Associate the descriptor with DMA channel 0 and arm the DMA channel
-		DMA0CFGH = ((unsigned int)&dmaDesc) >> 8;
-		DMA0CFGL = (unsigned int)&dmaDesc;
-		DMAARM = 0x01; // Arm Channel 0; DMAARM0
-		
-		// save enabled interrupts
-		storedIEN0 = IEN0;
-		storedIEN1 = IEN1;
-		storedIEN2 = IEN2; 
-		
-		// make sure interrupts aren't completely disabled
-		// and enable sleep timer interrupt
-		IEN0 |= 0xA0; // Set EA and STIE bits
-         
-		// then disable all interrupts except the sleep timer
-		IEN0 &= 0xA0;
-		IEN1 &= ~0x3F;
-		IEN2 &= ~0x3F;
-		
-		//sleep_start_ms = getMs();
-		sleep_time_ms = calcSleep(seconds);
-		sleep_time = (unsigned short)(sleep_time_ms/1000);
-		//printf_fast("sleep_time: %u\r\n", sleep_time);
-		//pkt_time += sleep_time_ms;
-		if (sleep_time == 0 || sleep_time > seconds) {
-			if(send_debug)
-				printf_fast("too late to sleep, cancelling\r\n");
-			//LED_YELLOW(1);
-			// Switch back to high speed
-			boardClockInit();   
-			return;
-		}
-		addMs(sleep_time_ms);
-		WORCTRL |= 0x04; // Reset Sleep Timer, set resolution to 1 clock cycle
-		temp = WORTIME0;
-		while(temp == WORTIME0); // Wait until a positive 32 kHz edge
-		temp = WORTIME0;
-		while(temp == WORTIME0); // Wait until a positive 32 kHz edge
-		WOREVT1 = sleep_time >> 8; // Set EVENT0, high byte
-		WOREVT0 = sleep_time; // Set EVENT0, low byte
-		MEMCTR |= 0x02;  // Flash cache must be disabled.
-		SLEEP = 0x06; // PM2, disable USB, power down other oscillators
-		
-		__asm nop __endasm; 
-		__asm nop __endasm; 
-		__asm nop __endasm;
-		
-		if (SLEEP & 0x03) {
-			__asm mov 0xD7,#0x01 __endasm; // DMAREQ = 0x01;
-			__asm nop __endasm;            // Needed to perfectly align the DMA transfer.
-			__asm orl 0x87,#0x01 __endasm; // PCON |= 0x01;
-			__asm nop __endasm;      
-		}
-		// restore enabled interrupts
-		IEN0 = storedIEN0;
-		IEN1 = storedIEN1;
-		IEN2 = storedIEN2; 
-		// restore DMA descriptor
-		DMA0CFGH = storedDescHigh;
-		DMA0CFGL = storedDescLow;
-		if (storedDma0Armed)
-			DMAARM |= 0x01; // Set DMA0ARM
-   
-		// Switch back to high speed
-		boardClockInit();   
-
-
-	} else {
-		// set Sleep Timer to the lowest resolution (1 second)      
-		WORCTRL |= 0x03; // WOR_RES[1:0]
-		// make sure interrupts aren't completely disabled
-		// and enable sleep timer interrupt
-		IEN0 |= 0xA0; // Set EA and STIE bits
-       
-		WORCTRL |= 0x04; // Reset Sleep Timer; WOR_RESET, and set resolution to 1 clock period
-		temp = WORTIME0;
-		while(temp == WORTIME0); // Wait until a positive 32 kHz edge
-		temp = WORTIME0;
-		while(temp == WORTIME0); // Wait until a positive 32 kHz edge
-
-		sleep_time_ms = calcSleep(seconds);
-		sleep_time = (unsigned short)(sleep_time_ms/1000);
-		//printf_fast("sleep_time_ms: %lu, sleep_time: %u\r\n", sleep_time_ms, sleep_time);
-		//pkt_time += sleep_time_ms;
-		if (sleep_time == 0 || sleep_time > seconds) {
-			//LED_YELLOW(1);
-			// Switch back to high speed
-			boardClockInit();   
-			return;
-		}
-		addMs(sleep_time_ms);
-		WOREVT1 = sleep_time >> 8; // Set EVENT0, high byte
-		WOREVT0 = sleep_time; // Set EVENT0, low byte
-
-		// Set SLEEP.MODE according to PM1
-
-		SLEEP = (SLEEP & 0xFC) | 0x01; // SLEEP.MODE[1:0]
-		// Apply three NOPs to allow the corresponding interrupt blocking to take
-		// effect, before verifying the SLEEP.MODE bits below. Note that all
-		// interrupts are blocked when SLEEP.MODE ? 0, thus the time between
-		// setting SLEEP.MODE ? 0, and asserting PCON.IDLE should be as short as
-		// possible. If an interrupt occurs before the NOPs have completed, then
-		// the enabled ISR shall clear the SLEEP.MODE bits, according to the code
-		// in Figure 7.
-
-		__asm nop __endasm;
-		__asm nop __endasm;
-		__asm nop __endasm;
-
-		// If no interrupt was executed in between the above NOPs, then all
-		// interrupts are effectively blocked when reaching this code position.
-		// If the SLEEP.MODE bits have been cleared at this point, which means
-		// that an ISR has indeed executed in between the above NOPs, then the
-		// application will not enter PM{1 – 3} !
-   
-		if (SLEEP & 0x03) // SLEEP.MODE[1:0]
+		if( sleep_time % 10 == 0)
 		{
-			// Set PCON.IDLE to enter the selected PM, e.g. PM1.
-			PCON |= 0x01;
-			// The SoC is now in PM and will only wake up upon Sleep Timer interrupt
-			// or external Port interrupt.
-			__asm nop __endasm;    
+			this_sleep_time = 10;
 		}
-		// Switch back to high speed      
-		boardClockInit(); 
-		// add the time we were asleep to ms count
-		/*		if(sleep_start_ms > now) {
-			addMs( sleep_time_ms - ((now + 4294967295) - sleep_time_ms));
+		else
+		{
+			this_sleep_time = sleep_time % 10;
+		}
+		sleep_time -= this_sleep_time;
+		if(!usb_connected)
+		{
+			unsigned char storedDescHigh, storedDescLow;
+			BIT	storedDma0Armed;
+			unsigned char storedIEN0, storedIEN1, storedIEN2;
+			disableUsbPullup();
+			usbDeviceState = USB_STATE_DETACHED;
+			// disable the USB module
+			SLEEP &= ~(1<<7); // Disable the USB module (SLEEP.USB_EN = 0).
+			// sleep power mode 2 is incompatible with USB - as USB registers lose state in this mode.
+
+	   
+			// set Sleep Timer to the lowest resolution (1 second)      
+			WORCTRL |= 0x03;
+			// must be using RC OSC before going to PM2
+			switchToRCOSC();
+			
+			// Following DMA code is a workaround for a bug described in Design Note
+			// DN106 section 4.1.4 where there is a small chance that the sleep mode
+			// bits are faulty set to a value other than zero and this prevents the
+			// processor from waking up correctly (appears to hang)
+			
+			// Store current DMA channel 0 descriptor and abort any ongoing transfers,
+			// if the channel is in use.
+			storedDescHigh = DMA0CFGH;
+			storedDescLow = DMA0CFGL;
+			storedDma0Armed = DMAARM & 0x01;
+			DMAARM |= 0x81; // Abort transfers on DMA Channel 0; Set ABORT and DMAARM0
+			// Update descriptor with correct source.
+			dmaDesc[0] = ((unsigned int)& PM2_BUF) >> 8;
+			dmaDesc[1] = (unsigned int)& PM2_BUF;
+			// Associate the descriptor with DMA channel 0 and arm the DMA channel
+			DMA0CFGH = ((unsigned int)&dmaDesc) >> 8;
+			DMA0CFGL = (unsigned int)&dmaDesc;
+			DMAARM = 0x01; // Arm Channel 0; DMAARM0
+			
+			// save enabled interrupts
+			storedIEN0 = IEN0;
+			storedIEN1 = IEN1;
+			storedIEN2 = IEN2; 
+			
+			// make sure interrupts aren't completely disabled
+			// and enable sleep timer interrupt
+			IEN0 |= 0xA0; // Set EA and STIE bits
+			 
+			// then disable all interrupts except the sleep timer
+			IEN0 &= 0xA0;
+			IEN1 &= ~0x3F;
+			IEN2 &= ~0x3F;
+			
+			//printf_fast("sleep_time: %u\r\n", sleep_time);
+			//pkt_time += sleep_time_ms;
+			if (this_sleep_time == 0 || sleep_time > seconds) {
+				if(send_debug)
+					printf_fast("too late to sleep, cancelling\r\n");
+				//LED_YELLOW(1);
+				// Switch back to high speed
+				boardClockInit();   
+				return;
+			}
+			WORCTRL |= 0x04; // Reset Sleep Timer, set resolution to 1 clock cycle
+			temp = WORTIME0;
+			while(temp == WORTIME0); // Wait until a positive 32 kHz edge
+			temp = WORTIME0;
+			while(temp == WORTIME0); // Wait until a positive 32 kHz edge
+			WOREVT1 = this_sleep_time >> 8; // Set EVENT0, high byte
+			WOREVT0 = this_sleep_time; // Set EVENT0, low byte
+			MEMCTR |= 0x02;  // Flash cache must be disabled.
+			SLEEP = 0x06; // PM2, disable USB, power down other oscillators
+			
+			__asm nop __endasm; 
+			__asm nop __endasm; 
+			__asm nop __endasm;
+			
+			if (SLEEP & 0x03) {
+				__asm mov 0xD7,#0x01 __endasm; // DMAREQ = 0x01;
+				__asm nop __endasm;            // Needed to perfectly align the DMA transfer.
+				__asm orl 0x87,#0x01 __endasm; // PCON |= 0x01;
+				__asm nop __endasm;      
+			}
+			// restore enabled interrupts
+			IEN0 = storedIEN0;
+			IEN1 = storedIEN1;
+			IEN2 = storedIEN2; 
+			// restore DMA descriptor
+			DMA0CFGH = storedDescHigh;
+			DMA0CFGL = storedDescLow;
+			if (storedDma0Armed)
+				DMAARM |= 0x01; // Set DMA0ARM
+	   
+			// Switch back to high speed
+			boardClockInit();   
+
 		} else {
-			addMs(sleep_time_ms - (now - sleep_start_ms));
-		} */
+			// set Sleep Timer to the lowest resolution (1 second)      
+			WORCTRL |= 0x03; // WOR_RES[1:0]
+			// make sure interrupts aren't completely disabled
+			// and enable sleep timer interrupt
+			IEN0 |= 0xA0; // Set EA and STIE bits
+		   
+			WORCTRL |= 0x04; // Reset Sleep Timer; WOR_RESET, and set resolution to 1 clock period
+			temp = WORTIME0;
+			while(temp == WORTIME0); // Wait until a positive 32 kHz edge
+			temp = WORTIME0;
+			while(temp == WORTIME0); // Wait until a positive 32 kHz edge
+
+			//printf_fast("sleep_time_ms: %lu, sleep_time: %u\r\n", sleep_time_ms, sleep_time);
+			if(this_sleep_time == 0 || sleep_time > seconds) {
+				//LED_YELLOW(1);
+				// Switch back to high speed
+				boardClockInit();   
+				return;
+			}
+			WOREVT1 = this_sleep_time >> 8; // Set EVENT0, high byte
+			WOREVT0 = this_sleep_time; // Set EVENT0, low byte
+
+			// Set SLEEP.MODE according to PM1
+
+			SLEEP = (SLEEP & 0xFC) | 0x01; // SLEEP.MODE[1:0]
+			// Apply three NOPs to allow the corresponding interrupt blocking to take
+			// effect, before verifying the SLEEP.MODE bits below. Note that all
+			// interrupts are blocked when SLEEP.MODE ? 0, thus the time between
+			// setting SLEEP.MODE ? 0, and asserting PCON.IDLE should be as short as
+			// possible. If an interrupt occurs before the NOPs have completed, then
+			// the enabled ISR shall clear the SLEEP.MODE bits, according to the code
+			// in Figure 7.
+
+			__asm nop __endasm;
+			__asm nop __endasm;
+			__asm nop __endasm;
+
+			// If no interrupt was executed in between the above NOPs, then all
+			// interrupts are effectively blocked when reaching this code position.
+			// If the SLEEP.MODE bits have been cleared at this point, which means
+			// that an ISR has indeed executed in between the above NOPs, then the
+			// application will not enter PM{1 – 3} !
+	   
+			if (SLEEP & 0x03) // SLEEP.MODE[1:0]
+			{
+				// Set PCON.IDLE to enter the selected PM, e.g. PM1.
+				PCON |= 0x01;
+				// The SoC is now in PM and will only wake up upon Sleep Timer interrupt
+				// or external Port interrupt.
+				__asm nop __endasm;    
+			}
+			// Switch back to high speed      
+			boardClockInit(); 
+		}
+		addMs(this_sleep_time * 1000);
 	}
 //	printf_fast("awake!  getMs is %lu\r\n", getMs());
 //	printf_fast("slept for %lu us, %u s \r\n", sleep_time_ms, sleep_time);
@@ -1590,7 +1586,8 @@ int doCommand()
 			printf_fast("LEDs are off\r\n");
 	}
 	// 'p' command for resetting the Battery Limit values to defaults
-	if(command_buff.commandBuffer[0] == 0x4C || command_buff.commandBuffer[0] == 0x6C) {
+	if(command_buff.commandBuffer[0] == 0x50 || command_buff.commandBuffer[0] == 0x70) 
+	{
 		if(getFlag(XBRIDGE_HW)) {
 			settings.battery_maximum = BATTERY_MAXIMUM;
 			settings.battery_minimum = BATTERY_MINIMUM;
@@ -1651,7 +1648,14 @@ int controlProtocolService()
 		// reset the command timeout.
 		cmd_to = getMs();
 		// if it is the end for the byte string, we need to process the command
-		if(command_buff.nCurReadPos == command_buff.commandBuffer[0] || (command_buff.nCurReadPos == 1 && ((command_buff.commandBuffer[0] & 0x5F) == 0x53 )) || (command_buff.nCurReadPos == 1 && ((command_buff.commandBuffer[0] & 0x5F) == 0x44 )) || (command_buff.nCurReadPos == 1 && ((command_buff.commandBuffer[0] & 0x5F) == 0x42 )) || (command_buff.nCurReadPos == 1 && ((command_buff.commandBuffer[0] & 0x5F) == 0x4c )) || (command_buff.nCurReadPos == 2 && command_buff.commandBuffer[0] == 0x4F))
+		if( command_buff.nCurReadPos == command_buff.commandBuffer[0] || 
+			(command_buff.nCurReadPos == 1 && ((command_buff.commandBuffer[0] & 0x5F) == 0x53 )) || 
+			(command_buff.nCurReadPos == 1 && ((command_buff.commandBuffer[0] & 0x5F) == 0x44 )) || 
+			(command_buff.nCurReadPos == 1 && ((command_buff.commandBuffer[0] & 0x5F) == 0x42 )) || 
+			(command_buff.nCurReadPos == 1 && ((command_buff.commandBuffer[0] & 0x5F) == 0x4c )) || 
+			(command_buff.nCurReadPos == 1 && ((command_buff.commandBuffer[0] & 0x5F) == 0x50 )) || 
+			(command_buff.nCurReadPos == 2 && command_buff.commandBuffer[0] == 0x4F)
+			)
 		{
 			// ok we got the end of a command;
 			if(command_buff.nCurReadPos)

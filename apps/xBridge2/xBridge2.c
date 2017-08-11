@@ -90,7 +90,7 @@ elsewhere.  This small bridge rig should be kept nearby the T1D at all times.
 #include <uart1.h>
 
 //define the xBridge Version
-#define VERSION ("2.47a")
+#define VERSION ("2.47b")
 //define the FLASH_TX_ID address.  This is the address we store the Dexcom TX ID number in.
 //#define FLASH_TX_ID		(0x77F8)
 //define the DEXBRIDGE_FLAGS address.  This is the address we store the xBridge flags in.
@@ -969,6 +969,11 @@ void goToSleep (uint16 seconds) {
 			this_sleep_time = sleep_time % 10;
 		}
 		sleep_time -= this_sleep_time;
+		if (this_sleep_time == 0 || sleep_time > seconds) {
+			if(send_debug)
+				printf_fast("too late to sleep, cancelling\r\n");
+			return;
+		}
 		if(!usb_connected)
 		{
 			unsigned char storedDescHigh, storedDescLow;
@@ -1021,14 +1026,6 @@ void goToSleep (uint16 seconds) {
 			
 			//printf_fast("sleep_time: %u\r\n", sleep_time);
 			//pkt_time += sleep_time_ms;
-			if (this_sleep_time == 0 || sleep_time > seconds) {
-				if(send_debug)
-					printf_fast("too late to sleep, cancelling\r\n");
-				//LED_YELLOW(1);
-				// Switch back to high speed
-				boardClockInit();   
-				return;
-			}
 			WORCTRL |= 0x04; // Reset Sleep Timer, set resolution to 1 clock cycle
 			temp = WORTIME0;
 			while(temp == WORTIME0); // Wait until a positive 32 kHz edge
@@ -1075,13 +1072,6 @@ void goToSleep (uint16 seconds) {
 			temp = WORTIME0;
 			while(temp == WORTIME0); // Wait until a positive 32 kHz edge
 
-			//printf_fast("sleep_time_ms: %lu, sleep_time: %u\r\n", sleep_time_ms, sleep_time);
-			if(this_sleep_time == 0 || sleep_time > seconds) {
-				//LED_YELLOW(1);
-				// Switch back to high speed
-				boardClockInit();   
-				return;
-			}
 			WOREVT1 = this_sleep_time >> 8; // Set EVENT0, high byte
 			WOREVT0 = this_sleep_time; // Set EVENT0, low byte
 
@@ -1119,8 +1109,6 @@ void goToSleep (uint16 seconds) {
 		}
 		addMs(this_sleep_time * 1000);
 	}
-//	printf_fast("awake!  getMs is %lu\r\n", getMs());
-//	printf_fast("slept for %lu us, %u s \r\n", sleep_time_ms, sleep_time);
 	is_sleeping = 0;
 }
 
@@ -2093,10 +2081,7 @@ void main()
 			// wait 10 seconds, listenting for the ACK.
 			if(send_debug)
 				printf_fast("%lu - waiting for ack\r\n", getMs());
-//			waitDoingServices(10000, 0, 1);
-			waitDoingServices(10000, 1);
-						
-			// if we got the ACK, get out of the loop.
+			waitDoingServicesInterruptible(10000, do_sleep, 1);						
 			// if we have sent a number of packets and still have not got an ACK, time to sleep.  We keep trying for up to 3 minutes.
 			if((getMs() - pkt_time) >= 120000) {
 				//sendBeacon();

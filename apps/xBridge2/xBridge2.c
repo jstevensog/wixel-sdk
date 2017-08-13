@@ -1294,7 +1294,7 @@ void configBt() {
 	length = sprintf(msg_buf, "AT+NAMExBridge%02x%02x", serialNumber[0],serialNumber[1]);
 	send_data(msg_buf, length);
 	waitDoingServices(500,1);
-	length = sprintf(msg_buf,"AT+PWRM0");
+	length = sprintf(msg_buf,"AT+PWRM1"); /* PWRM1: do not auto sleep */
 	send_data(msg_buf,length);
 	waitDoingServices(500,1);
 	length = sprintf(msg_buf,"AT+ADVI0");
@@ -1993,7 +1993,7 @@ void main()
 		while (!ble_connected) doServices(1);
 		sendBeacon(); //send a beacon packet
 		doServices(0);
-		waitDoingServicesInterruptible(5000, dex_tx_id_set, 1); //wait 5 seconds
+		waitDoingServicesInterruptible(1000, dex_tx_id_set, 1); //wait 5 seconds
 	}
 
 	// if we still have settings to save (no TXID set), save them
@@ -2022,16 +2022,17 @@ void main()
         LED_GREEN(0);
         
 	while (1) {
+		if (send_debug) printf_fast("%lu - waiting for pkt\r\n", getMs());
 		scanning_for_packet = 1;
 		if (get_packet(&Pkts.buffer[Pkts.write])) {
-			printf_fast("%lu - got pkt, stored at position %d\r\n", getMs(), Pkts.write);
+			if (send_debug) printf_fast("%lu - got pkt, stored at position %d\r\n", getMs(), Pkts.write);
 			// so increment write position for next round...
 			Pkts.write = (Pkts.write + 1) & (DXQUEUESIZE-1);
 			if (Pkts.read == Pkts.write)
 				Pkts.read = (Pkts.read + 1) & (DXQUEUESIZE-1); //overflow in ringbuffer, overwriting oldest entry, thus move read one up
 			do_sleep = 1; // we got a packet, so we are aligned with the 5 minute interval - so go to sleep after sending out packets
 		} else {
-			printf_fast("%lu - did not receive a pkt with %d pkts in queue\r\n", getMs(), (Pkts.write - Pkts.read));
+			if (send_debug) printf_fast("%lu - did not receive a pkt with %d pkts in queue\r\n", getMs(), (Pkts.write - Pkts.read));
 			setDigitalOutput(10, HIGH);
 			if (ble_connected) sendBeacon();
 			do_sleep = 0; // we did not receive a packet, so do not sleep but keep looking for the next one..
@@ -2052,7 +2053,7 @@ void main()
 				if(send_debug) printf_fast("%lu sending packet\r\n", getMs());
 				got_ack = 0;
 				print_packet(&Pkts.buffer[Pkts.read]);
-				waitDoingServicesInterruptible(2000, got_ack, 1);
+				waitDoingServicesInterruptible(1000, got_ack, 1);
 				if (got_ack) {
 					if (send_debug)	printf_fast("%lu got ack for read position %d while write is %d, incrementing read\r\n", getMs(), Pkts.read, Pkts.write);
 					Pkts.read = (Pkts.read + 1) & (DXQUEUESIZE-1); //increment read position since we got an ack for the last package

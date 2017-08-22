@@ -90,7 +90,7 @@ elsewhere.  This small bridge rig should be kept nearby the T1D at all times.
 #include <uart1.h>
 
 //define the xBridge Version
-#define VERSION ("2.47b")
+#define VERSION ("2.47d")
 //define the FLASH_TX_ID address.  This is the address we store the Dexcom TX ID number in.
 //#define FLASH_TX_ID		(0x77F8)
 //define the DEXBRIDGE_FLAGS address.  This is the address we store the xBridge flags in.
@@ -910,7 +910,19 @@ void switchToRCOSC(void)
    SLEEP |= 0x04;
 }
 
-
+void switchToHSXOSC(void)
+{
+	// Power up [HS XOSC] (SLEEP.OSC_PD = 0)
+	SLEEP &= ~0x04;
+	// Wait until [HS XOSC] is stable (SLEEP.XOSC_STB = 1)
+	while ( ! (SLEEP & 0x40) );
+	// Switch system clock source to [HS XOSC] (CLKCON.OSC = 0)
+	CLKCON &= ~0x40;
+	// Wait until system clock source has actually changed (CLKCON.OSC = 0)
+	while ( CLKCON & 0x40 );
+	// Power down [HS RCOSC] (SLEEP.OSC_PD = 1)
+	SLEEP |= 0x04;
+}
 
 
 uint32 calcSleep(uint16 seconds) {
@@ -942,37 +954,51 @@ void goToSleep (uint16 seconds) {
     unsigned char temp;
 	//uint16 sleep_time = 0;
 	unsigned short sleep_time = 0;
-	unsigned short this_sleep_time = 10;
+	unsigned short this_sleep_time = 10000;
 	uint32 sleep_time_ms = 0;
+	uint32 seconds_ms = seconds;
+	seconds_ms *= 1000;
 	//initialise sleep library
 	sleepInit();
 
     // The wixel docs note that any high output pins consume ~30uA
     makeAllOutputs(LOW);
-	while(usb_connected && (usbComTxAvailable() < 128)) {
+/*	while(usb_connected && (usbComTxAvailable() < 128)) {
 		usbComService();
-	}
+	}*/
 	is_sleeping = 1;
 	//calculate the time we will sleep in total.
 	sleep_time_ms = calcSleep(seconds);
 	sleep_time = (unsigned short)(sleep_time_ms/1000);
 	// we wake up every 10 seconds to recalibrate the RCOSC.  
 	//The first time may be less than 10 seconds, in case we calculate value that is not wholey divisible by 10.
-	while(sleep_time > 0)		
+	//while(sleep_time > 0)
+	while(sleep_time_ms >0 )
 	{
-		if( sleep_time % 10 == 0)
+		if( sleep_time_ms % 10000 == 0)
 		{
-			this_sleep_time = 10;
+			this_sleep_time = 10000;
 		}
 		else
 		{
-			this_sleep_time = sleep_time % 10;
+			this_sleep_time = sleep_time_ms % 10000;
 		}
-		sleep_time -= this_sleep_time;
-		if (this_sleep_time == 0 || sleep_time > seconds) {
+		sleep_time_ms -= this_sleep_time;
+		if(send_debug)
+			printf_fast("%lu - sleep_time_ms is %lu, this_sleep_time is %u\r\n", getMs(), sleep_time_ms, this_sleep_time);
+		if (this_sleep_time < 5000 || this_sleep_time > 10000) {
 			if(send_debug)
-				printf_fast("too late to sleep, cancelling\r\n");
+				printf_fast("this_sleep_time is %u, so skipping this iteration.\r\n", this_sleep_time);
+			continue;
+		}
+		if (sleep_time_ms > seconds_ms) {
+			//printf_fast(" sleep_time too short.  Not sleeping.");
+			if(send_debug)
+				printf_fast("sleep_time_ms (%lu) is greater than seconds_ms (%lu).\r\n", sleep_time_ms, seconds_ms);
 			return;
+		}
+		while(usb_connected && (usbComTxAvailable() < 128)) {
+			usbComService();
 		}
 		if(!usb_connected)
 		{
@@ -984,10 +1010,8 @@ void goToSleep (uint16 seconds) {
 			// disable the USB module
 			SLEEP &= ~(1<<7); // Disable the USB module (SLEEP.USB_EN = 0).
 			// sleep power mode 2 is incompatible with USB - as USB registers lose state in this mode.
-
-	   
-			// set Sleep Timer to the lowest resolution (1 second)      
-			WORCTRL |= 0x03;
+			// set Sleep Timer to the ms resolution      
+			WORCTRL |= 0x01;
 			// must be using RC OSC before going to PM2
 			switchToRCOSC();
 			
@@ -1024,8 +1048,6 @@ void goToSleep (uint16 seconds) {
 			IEN1 &= ~0x3F;
 			IEN2 &= ~0x3F;
 			
-			//printf_fast("sleep_time: %u\r\n", sleep_time);
-			//pkt_time += sleep_time_ms;
 			WORCTRL |= 0x04; // Reset Sleep Timer, set resolution to 1 clock cycle
 			temp = WORTIME0;
 			while(temp == WORTIME0); // Wait until a positive 32 kHz edge
@@ -1034,7 +1056,7 @@ void goToSleep (uint16 seconds) {
 			WOREVT1 = this_sleep_time >> 8; // Set EVENT0, high byte
 			WOREVT0 = this_sleep_time; // Set EVENT0, low byte
 			MEMCTR |= 0x02;  // Flash cache must be disabled.
-			SLEEP = 0x06; // PM2, disable USB, power down other oscillators
+			SLEEP = (SLEEP & 0xFC) | 0x06; // PM2, disable USB, power down other oscillators
 			
 			__asm nop __endasm; 
 			__asm nop __endasm; 
@@ -1057,11 +1079,11 @@ void goToSleep (uint16 seconds) {
 				DMAARM |= 0x01; // Set DMA0ARM
 	   
 			// Switch back to high speed
-			boardClockInit();   
+			switchToHSXOSC();
 
 		} else {
-			// set Sleep Timer to the lowest resolution (1 second)      
-			WORCTRL |= 0x03; // WOR_RES[1:0]
+			// set Sleep Timer to the ms resolution      
+			WORCTRL |= 0x01;
 			// make sure interrupts aren't completely disabled
 			// and enable sleep timer interrupt
 			IEN0 |= 0xA0; // Set EA and STIE bits
@@ -1094,7 +1116,7 @@ void goToSleep (uint16 seconds) {
 			// interrupts are effectively blocked when reaching this code position.
 			// If the SLEEP.MODE bits have been cleared at this point, which means
 			// that an ISR has indeed executed in between the above NOPs, then the
-			// application will not enter PM{1  3} !
+			// application will not enter PM{1 - 3} !
 	   
 			if (SLEEP & 0x03) // SLEEP.MODE[1:0]
 			{
@@ -1105,10 +1127,14 @@ void goToSleep (uint16 seconds) {
 				__asm nop __endasm;    
 			}
 			// Switch back to high speed      
-			boardClockInit(); 
+			//boardClockInit();
+			switchToHSXOSC();
 		}
-		addMs(this_sleep_time * 1000);
+		//addMs(this_sleep_time * 1000);
+		addMs(this_sleep_time);
 	}
+	//addMs(sleep_time_ms);
+	boardClockInit();
 	is_sleeping = 0;
 }
 
@@ -1518,7 +1544,7 @@ int doCommand()
 	// if do_sleep is set already, don't process it
 	if(command_buff.commandBuffer[0] == 0x02 && command_buff.commandBuffer[1] == 0xF0 && !do_sleep) {
 		if(send_debug)
-			printf_fast("Processing ACK packet\r\n");
+			printf_fast("%lu - Processing ACK packet\r\n", getMs());
 		do_sleep = 1;
 		init_command_buff(&command_buff);
 		return(0);
@@ -1709,10 +1735,10 @@ int WaitForPacket(uint32 milliseconds, Dexcom_packet* pkt, uint8 channel)
 	// a variable to use to convert the pkt-txId to something we can use.
 	uint8 txid = 0;
 	if(send_debug)
-		printf_fast("waiting for packet on channel %u for %lu \r\n", channel, milliseconds);
+		printf_fast("%lu - start is %lu, waiting for packet on channel %u for %lu \r\n", getMs(), start, channel, milliseconds);
 	// safety first, make sure the channel is valid, and return with error if not.
 	if(channel >= NUM_CHANNELS)
-		return -1;
+		return -3;
 	// set the channel parameters using swap_channel
 	swap_channel(nChannels[channel], fOffset[channel]);
 	// while we haven't reached the delay......
@@ -1834,29 +1860,31 @@ int get_packet(Dexcom_packet* pPkt)
 			else if(getMs()<pkt_time) 
 			{
 				//the current time is less than the pkt_time, meaning our ms register has rolled over.
-				delay = (300000 - (wake_before_packet*1000)) - (4294967295 + getMs() - pkt_time);
+				printf_fast("%lu is less than pkt_time (%lu), getMs has rolled over.\r\n", getMs(), pkt_time);
+				delay = 300000 - (4294967295 + getMs() - pkt_time);
 			}
 			else
 			{
 				// the current time is greater than the last pkt_time, so we just do a basic calculation.
 				// 5 mins in ms + the wake_before_packet time - (current ms - last packet ms)
-				delay = (300000 - (wake_before_packet*1000)) - (getMs() - pkt_time);
+				printf_fast("%lu is greater than pkt_time (%lu), standard calc\r\n", getMs(), pkt_time);
+				delay = 300000 - (getMs() - pkt_time);
 			}
 			//if we have a delay number that doesn't equal 0, we need to subtract 500 * the channel we last captured on.
 			// ie, if we last captured on channel 0, subtract 0.  If on channel 1, subtract 500, etc
-			if(delay)
+			if(delay > 0)
 			{
 				delay -= (last_channel * 500);
 				if(crc_error) 
 					delay += 50;
-				if(send_debug)
-					printf_fast("%lu: last_channel is %u, delay is %lu\r\n", getMs(), last_channel, delay);
 			}
 			// in case the figure we came up with is greater than 5 minutes, we deal with it here.  Probably never will run, i'm just like that.
 			while(delay > 300000)
 			{
 				delay -= 300000;
 			}
+			if(send_debug)
+				printf_fast("%lu: last_channel is %u, delay is %lu\r\n", getMs(), last_channel, delay);
 		}
 		switch(WaitForPacket(delay, pPkt, nChannel))
 		{
@@ -1876,13 +1904,24 @@ int get_packet(Dexcom_packet* pPkt)
 			case -1:
 			{
 			// cancelled by inbound data on USB (command), or channel invalid.
-				//printf_fast("leaving getPacket\r\n");
+				printf_fast("USB command, interrupted\r\n");
 				return 0;
 			}
 			case -2:
 			{
 				//got a bad CRC on the channel, so say so to let the delay calculation know to wait a little longer.
 				crc_error = 1;
+				continue;
+			}
+			case -3:
+			{
+				printf_fast("Invalid Channel\r\n");
+				continue;
+			}
+			default:
+			{
+				printf_fast("Unspecified Error from WaitForPacket\r\n");
+				continue;
 			}
 		}
 		//delay = 600;
@@ -2082,7 +2121,7 @@ void main()
 			if(send_debug)
 				printf_fast("%lu - waiting for ack\r\n", getMs());
 			waitDoingServicesInterruptible(10000, do_sleep, 1);						
-			// if we have sent a number of packets and still have not got an ACK, time to sleep.  We keep trying for up to 3 minutes.
+			// if we have sent a number of packets and still have not got an ACK, time to sleep.  We keep trying for up to 2 minutes.
 			if((getMs() - pkt_time) >= 120000) {
 				//sendBeacon();
 				sent_beacon = 0;
@@ -2109,10 +2148,6 @@ void main()
 			sent_beacon = 0;
 			// turn of the RF Frequency Synthesiser.
 			RFST = 4;   //SIDLE
-			// turn all wixel LEDs on
-			//LED_RED(1);
-			//LED_YELLOW(1);
-			//LED_GREEN(1);
 			// wait 500 ms, processing services.
 			dly_ms=getMs();
 			while((getMs() - dly_ms) <= 500) {
@@ -2124,15 +2159,10 @@ void main()
 			}
 			// make sure the uart send buffer is empty.
 			while(uart1TxAvailable() < 255);
-			// turn the wixel LEDS off
-			LED_RED(0);
-			LED_YELLOW(0);
-			LED_GREEN(0);
 			// turn off the BLE module
 			if(sleep_ble){
-				if(send_debug) {
+				if(send_debug)
 					printf_fast("turning off BLE\r\n");
-					}
 				setDigitalOutput(10,LOW);
 				ble_connected = 0;
 			}
@@ -2140,6 +2170,10 @@ void main()
 			if(send_debug)
 				printf_fast("%lu - sleeping for %u\r\n", getMs(), 300-wake_before_packet);
 			radioMacSleep();
+			// turn the wixel LEDS off
+			LED_RED(0);
+			LED_YELLOW(0);
+			LED_GREEN(0);
 			goToSleep(300-wake_before_packet);   //
 			got_packet = 0;
 			radioMacResume();

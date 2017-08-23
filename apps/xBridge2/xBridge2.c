@@ -2053,7 +2053,7 @@ void main()
 				if(send_debug) printf_fast("%lu sending packet\r\n", getMs());
 				got_ack = 0;
 				print_packet(&Pkts.buffer[Pkts.read]);
-				waitDoingServicesInterruptible(1000, got_ack, 1);
+				waitDoingServicesInterruptible(10000, got_ack, 1);
 				if (got_ack) {
 					if (send_debug)	printf_fast("%lu got ack for read position %d while write is %d, incrementing read\r\n", getMs(), Pkts.read, Pkts.write);
 					Pkts.read = (Pkts.read + 1) & (DXQUEUESIZE-1); //increment read position since we got an ack for the last package

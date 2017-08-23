@@ -657,26 +657,22 @@ void saveSettingsToFlash()
 			printf_fast("settings saved to flash\r\n");
 } 
 
-
 // store RF config in FLASH, and retrieve it from here to put it in proper location (also incidentally in flash).
 // this allows persistent storage of RF params that will survive a restart of the wixel (although not a reload of wixel app obviously).
 // TO-DO get this working with DMA - need to erase memory block first, then write this to it.
-//uint8 XDATA RF_Params[50];
-
 
 void LoadRFParam(unsigned char XDATA* addr, uint8 default_val)
 {
 		*addr = default_val; 
 }
 
-
 /*
-void uartDisable() {
-    U1UCR &= ~0x40; //Hardware Flow Control (CTS/RTS) Off.  We always want it off.
-//    U1CSR &= ~0x40; // Recevier disable.
-}
+*  End of Flash functions
 */
 
+/*
+** Radio Settings Function - Initialises the CC2511 radio for Dexcom G4 transmitter signal reception.
+*/
 void dex_RadioSettings()
 {
     // Transmit power: one of the highest settings, but not the highest.
@@ -780,29 +776,17 @@ void dex_RadioSettings()
 }
 
 
+/* 
+** Dexcom Transmitter ID functions
+*/
+
+// Utility function to compare and return the minimum of two 8 bit values
 uint8 min8(uint8 a, uint8 b)
 {
 	if(a < b) return a;
 	return b;
 }
 
-
-/*
-// getPacketRSSI - returns the RSSI value from the Dexcom_packet passed to it.
-int8 getPacketRSSI(Dexcom_packet* p)
-{
-	// RSSI_OFFSET for 489 kbaud is closer to 73 than 71
-	return (p->RSSI/2)-73;
-}
-
-
-//getPacketPassedChecksum - returns the checksum of the Dexcom_packet passed to it.
-uint8 getPacketPassedChecksum(Dexcom_packet* p)
-{
-	//take the LQI value from the packet, AND with 0x80.  If it equals 0x80, then return 1, otherwise return 0.
-	return ((p->LQI & 0x80)==0x80) ? 1:0;
-}
-*/
 //format an array to decode the dexcom transmitter name from a Dexcom packet source address.
 XDATA char SrcNameTable[32] = { '0', '1', '2', '3', '4', '5', '6', '7',
 						  '8', '9', 'A', 'B', 'C', 'D', 'E', 'F',
@@ -823,23 +807,17 @@ char *dexcom_src_to_ascii(uint32 src)
 	return (char *)addr;
 }
 
+/*
+** End of Dexcom Transmitter ID functions
+*/
 
+// Utility function to enable the UART
 void uartEnable() {
     U1UCR &= ~0x40; //Hardware Flow Control (CTS/RTS) Off.  We always want it off.
     U1CSR |= 0x40; // Recevier enable
 }
 
-// function to wait a specified number of milliseconds, whilst processing services.
-/*void waitDoingServices (uint32 wait_time, volatile BIT break_flag, BIT bProtocolServices ) {
-	XDATA uint32 start_wait;
-	start_wait = getMs();
-	while ((getMs() - start_wait) < wait_time) {
-		doServices(bProtocolServices);
-		if(break_flag) return;
-		delayMs(20);
-	}
-}
-*/
+// Macros for waitDoingServices calls.
 #define waitDoingServicesInterruptible(wait_time, break_flag, bProtocolServices) \
   do { \
 	XDATA uint32 start_wait; \
@@ -864,9 +842,12 @@ void uartEnable() {
 
 
 
-/** Functions *****************************************************************/
-/* the functions that puts the system to sleep (PM2) and configures sleep timer to
-wake it again in 250 seconds.*/
+/*
+** Sleep Functions ****************************************************************
+*/
+/* the functions that puts the system to sleep (PM1 / PM2) and configures sleep timer to
+wake it again.*/
+// function to make all CC2511 outputs low before going to sleep.
 void makeAllOutputs(BIT value)
 {
 	//we only make the P1_ports low, and not P1_2 or P1_3
@@ -879,11 +860,13 @@ void makeAllOutputs(BIT value)
     }
 }
 
+//function to initialise the Event0 interrupt, to wake the CC2511 at the prescribed time
 void sleepInit(void)
 {
    WORIRQ  |= (1<<4); // Enable Event0 interrupt  
 }
 
+//ISR function that is called when the Sleep Timer expires.
 ISR(ST, 1)
 {
    // Clear IRCON.STIF (Sleep Timer CPU interrupt flag)
@@ -895,6 +878,7 @@ ISR(ST, 1)
    SLEEP &= 0xFC; // Not required when resuming from PM0; Clear SLEEP.MODE[1:0]
 }
 
+// function to switch to the RCOSC prior to goint to sleep.
 void switchToRCOSC(void)
 {
    // Power up [HS RCOSC] (SLEEP.OSC_PD = 0)
@@ -910,6 +894,7 @@ void switchToRCOSC(void)
    SLEEP |= 0x04;
 }
 
+//function to switch to HSXOSC when we wake.
 void switchToHSXOSC(void)
 {
 	// Power up [HS XOSC] (SLEEP.OSC_PD = 0)
@@ -924,7 +909,7 @@ void switchToHSXOSC(void)
 	SLEEP |= 0x04;
 }
 
-
+// Calculate the time we need to sleep in order to wake up in time to get a packet.
 uint32 calcSleep(uint16 seconds) {
 	uint32 diff = 0;
 	//XDATA uint32 now = 0;
@@ -950,6 +935,7 @@ uint32 calcSleep(uint16 seconds) {
 	return diff;
 }
 
+// function to put the CC2511 to sleep, in the appropriate PM, for the specified number of seconds.
 void goToSleep (uint16 seconds) {
     unsigned char temp;
 	//uint16 sleep_time = 0;
@@ -963,9 +949,6 @@ void goToSleep (uint16 seconds) {
 
     // The wixel docs note that any high output pins consume ~30uA
     makeAllOutputs(LOW);
-/*	while(usb_connected && (usbComTxAvailable() < 128)) {
-		usbComService();
-	}*/
 	is_sleeping = 1;
 	//calculate the time we will sleep in total.
 	sleep_time_ms = calcSleep(seconds);
@@ -1138,6 +1121,11 @@ void goToSleep (uint16 seconds) {
 	is_sleeping = 0;
 }
 
+/*
+** End of Sleep Functions **
+*/
+
+// utility function to update the leds.  Called in doServices()
 void updateLeds()
 {
 	LED_GREEN( usb_connected & do_leds);
@@ -1172,7 +1160,7 @@ void updateLeds()
 	}
 }
 
-// This is called by printf and printPacket.
+// Utility function to print a character out the USB port.  This is called by printf and printPacket.
 void putchar(char c)
 {
 //	uart1TxSendByte(c);
@@ -1180,8 +1168,7 @@ void putchar(char c)
 		usbComTxSendByte(c);
 }
 
-
-//return a byte reversed from that passed.
+// Utility function to return a byte reversed from that passed.
 uint8 bit_reverse_byte(uint8 in)
 {
 	uint8 bRet = 0;
@@ -1203,7 +1190,8 @@ uint8 bit_reverse_byte(uint8 in)
 		bRet |= 0x01;
 	return bRet;
 }
-//reverse a byte buffer
+
+// Utility function to reverse a byte buffer
 void bit_reverse_bytes(uint8* buf, uint8 nLen)
 {
 	uint8 i = 0;
@@ -1213,7 +1201,7 @@ void bit_reverse_bytes(uint8* buf, uint8 nLen)
 	}
 }
 
-//decode the dex number (unsigned short float) as an unsigned 32bit integer.
+// Utility function to decode the dex number (unsigned short float) as an unsigned 32bit integer.
 uint32 dex_num_decoder(uint16 usShortFloat)
 {
 	uint16 usReversed = usShortFloat;
@@ -1225,7 +1213,7 @@ uint32 dex_num_decoder(uint16 usShortFloat)
 	return usMantissa << usExponent;
 }
 
-
+// Utility function to send a message buffer out the uart and USB (if connected)
 void send_data( uint8 *msg, uint8 len)
 {
 	uint8 i = 0;
@@ -1381,56 +1369,7 @@ void print_packet(Dexcom_packet* pPkt)
 	send_data( (uint8 XDATA *)msg, msg.size);
 }
 
-//function to print the passed Dexom_packet as either binary or ascii.
-/*void printf_packet(Dexcom_packet* pPkt)
-{
-	char *srcAddr;
-	//first normalise the pPkt-txId
-	//uint8 txid = (pPkt->txId & 0xFC) >> 2;
-
-	//Next, convert the pPkt->src_addr to a string and store it in the global srcAddr array for printing.
-	if(usb_connected) {
-		srcAddr = dexcom_src_to_ascii(pPkt->src_addr);
-	*/
-	/*
-	uint8	len;
-	uint32	dest_addr;
-	uint32	src_addr;
-	uint8	port;
-	uint8	device_info;
-	uint8	txId;
-	uint16	raw;
-	uint16	filtered;
-	uint8	battery;
-	uint8	unknown;
-	uint8	checksum;
-	int8	RSSI;
-	uint8	LQI;
-	*/
-		//print it comma separated.
-		//printf_fast("%s,%lu,%lu,%hhu,%hhi,%hhu\r\n",
-/*		printf_fast("len:%u, dest_addr:%lu, src_addr:%lu (%s), port:%u, device_info:%u, txId:%u, raw:%u (%lu), filtered:%u (%lu), battery:%u, RSSI:%i, LQI:%u\r\n",
-			pPkt->len,
-			pPkt->dest_addr,
-			pPkt->src_addr,
-			srcAddr,
-			pPkt->port,
-			pPkt->device_info,
-			pPkt->txId,
-			pPkt->raw,
-			dex_num_decoder(pPkt->raw),
-			pPkt->filtered,
-			2 * dex_num_decoder(pPkt->filtered),
-			pPkt->battery,
-			pPkt->RSSI,
-			pPkt->LQI);
-			
-			//txid);r	
-	}
-	
-}
-*/
-//function to send a beacon with the TXID
+// Utility function to send a beacon packet with the TXID
 void sendBeacon()
 {
 	//char array to store the response in.
@@ -1450,7 +1389,7 @@ void sendBeacon()
 }
 
 
-//initialise the USB port
+// Utility initialise the USB port
 uint8 init_command_buff(t_command_buff* pCmd)
 {
 	if(!pCmd)
@@ -1460,7 +1399,7 @@ uint8 init_command_buff(t_command_buff* pCmd)
 	return 0;
 }
 
-//Open the UART and set 9600,n,1 parameters.
+//Utility function to open the UART and set 9600,n,1 parameters.
 void openUart()
 {
 	XDATA uint8 i=0;
@@ -1847,7 +1786,7 @@ int get_packet(Dexcom_packet* pPkt)
 		// else, if we are on the start channel and we timed out, we are going to delay for 298 seconds (300 - 2 seconds for channels 1-3)
 		else if (timed_out && (nChannel == 0)) 
 		{
-			delay=298000;
+			delay=298500;
 		}
 		// otherwise.....
 		else

@@ -1783,10 +1783,11 @@ int get_packet(Dexcom_packet* pPkt)
 		{
 			delay=500;
 		}
-		// else, if we are on the start channel and we timed out, we are going to delay for 298 seconds (300 - 2 seconds for channels 1-3)
+		// else, if we are on the start channel and we timed out, we are going to delay for 298.5 seconds (300 - 1.5 seconds for channels 1-3)
 		else if (timed_out && (nChannel == 0)) 
 		{
-			delay=298500;
+			//delay=298500;
+			delay=0;
 		}
 		// otherwise.....
 		else

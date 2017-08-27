@@ -1783,10 +1783,10 @@ int get_packet(Dexcom_packet* pPkt)
 		{
 			delay=500;
 		}
-		// else, if we are on the start channel and we timed out, we are going to delay for 298.5 seconds (300 - 1.5 seconds for channels 1-3)
+		// else, if we are on the start channel and we timed out, we are going to delay for 298 seconds (300 - 2 seconds for channels 1-3)
 		else if (timed_out && (nChannel == 0)) 
 		{
-			delay=298500;
+			delay=298500+10;
 			//delay=0;
 		}
 		// otherwise.....
@@ -1802,14 +1802,14 @@ int get_packet(Dexcom_packet* pPkt)
 			{
 				//the current time is less than the pkt_time, meaning our ms register has rolled over.
 				printf_fast("%lu is less than pkt_time (%lu), getMs has rolled over.\r\n", getMs(), pkt_time);
-				delay = 300000 - (4294967295 + getMs() - pkt_time) + 250;
+				delay = 300000 - (4294967295 + getMs() - pkt_time);
 			}
 			else
 			{
 				// the current time is greater than the last pkt_time, so we just do a basic calculation.
 				// 5 mins in ms + the wake_before_packet time - (current ms - last packet ms)
 				printf_fast("%lu is greater than pkt_time (%lu), standard calc\r\n", getMs(), pkt_time);
-				delay = 300000 - (getMs() - pkt_time) + 250;
+				delay = 300000 - (getMs() - pkt_time);
 			}
 			//if we have a delay number that doesn't equal 0, we need to subtract 500 * the channel we last captured on.
 			// ie, if we last captured on channel 0, subtract 0.  If on channel 1, subtract 500, etc
@@ -1817,7 +1817,7 @@ int get_packet(Dexcom_packet* pPkt)
 			{
 				delay -= (last_channel * 500);
 				if(crc_error) 
-					delay += 250;
+					delay += 10;
 			}
 			// in case the figure we came up with is greater than 5 minutes, we deal with it here.  Probably never will run, i'm just like that.
 			while(delay > 300000)

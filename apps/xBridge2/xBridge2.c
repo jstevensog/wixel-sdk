@@ -1946,6 +1946,14 @@ void main()
 	uint8 i = 0;
 	uint16 rpt_pkt=0;
 	XDATA uint32 tmp_ms = 0;
+	// save port 0 Interrupt Enable state.  This is a BIT value and equates to IEN1.POIE.
+	// This is probably redundant now, as we do all IEN registers in goToSleep.
+	BIT savedP0IE;
+	uint8 savedPICTL;
+	uint8 savedP0SEL;
+	uint8 savedP0DIR;
+	uint8 savedP1SEL;
+	uint8 savedP1DIR;
 	systemInit();
 	//initialise the USB port
 	usbInit();
@@ -2133,23 +2141,6 @@ void main()
 		// can't safely sleep if we didn't get an ACK, or if we are already sleeping!
 		if (do_sleep && !is_sleeping)
 		{
-			// save all Port Interrupts state (enabled/disabled).
-		    uint8 savedPICTL = PICTL;
-			// save port 0 Interrupt Enable state.  This is a BIT value and equates to IEN1.POIE.
-			// This is probably redundant now, as we do all IEN registers in goToSleep.
-			BIT savedP0IE = P0IE;
-			uint8 savedP0SEL = P0SEL;
-			uint8 savedP0DIR = P0DIR;
-			uint8 savedP1SEL = P1SEL;
-			uint8 savedP1DIR = P1DIR;
-			P1SEL = 0x00;
-			P1DIR =0xff;
-			//printf_fast("%lu - going to sleep\r\n", getMs());
-			// clear sent_beacon so we send it next time we wake up.
-			sent_beacon = 0;
-			// turn of the RF Frequency Synthesiser.
-			RFST = 4;   //SIDLE
-			// wait 500 ms, processing services.
 			dly_ms=getMs();
 			while((getMs() - dly_ms) <= 500) {
 				// allow the wixel to complete any other tasks.
@@ -2162,10 +2153,10 @@ void main()
 			while(uart1TxAvailable() < 255);
 			// turn off the BLE module
 			if(sleep_ble){
-				waitDoingServices(500,1);
 				ble_dly_ms = getMs();
 				while(ble_connected && ((getMs() - ble_dly_ms) <= 2000 )) {
 					breakBt();
+					waitDoingServicesInterruptible(1000,(!ble_connected),1);
 					if(send_debug)
 						printf_fast("%lu - ble_connected = %d, P1_2 = %d\r\n", getMs(), ble_connected, P1_2);
 					if(ble_connected)
@@ -2181,6 +2172,23 @@ void main()
 				setDigitalOutput(10,LOW);
 				ble_connected = 0;
 			}
+		    savedPICTL = PICTL;
+			// save port 0 Interrupt Enable state.  This is a BIT value and equates to IEN1.POIE.
+			// This is probably redundant now, as we do all IEN registers in goToSleep.
+			savedP0IE = P0IE;
+			savedP0SEL = P0SEL;
+			savedP0DIR = P0DIR;
+			savedP1SEL = P1SEL;
+			savedP1DIR = P1DIR;
+			// save all Port Interrupts state (enabled/disabled).
+			P1SEL = 0x00;
+			P1DIR =0xff;
+			//printf_fast("%lu - going to sleep\r\n", getMs());
+			// clear sent_beacon so we send it next time we wake up.
+			sent_beacon = 0;
+			// turn of the RF Frequency Synthesiser.
+			RFST = 4;   //SIDLE
+			// wait 500 ms, processing services.
 			// sleep for around 300s
 			if(send_debug)
 				printf_fast("%lu - sleeping for %u\r\n", getMs(), 300-wake_before_packet);

@@ -253,7 +253,9 @@ uint8 batteryPercent(uint16 val);
 // prototype for sendBeacon function
 void sendBeacon(void);
 // prototype for breakBt function.
-void breakBt(void);
+BIT breakBt(void);
+// prototype for atBt function
+void atBt(void);
 // prototype for init_command_buff
 uint8 init_command_buff(t_command_buff* pCmd);
 
@@ -1288,21 +1290,42 @@ void send_data( uint8 *msg, uint8 len)
 }
 */
 // Send a pulse to the BlueTooth module SYS input
-void breakBt() {
+BIT breakBt() {
 	XDATA uint8 length;
 	got_ok = 0;
 	init_command_buff(&uart_buff);
 	length = sprintf(msg_buf, "AT");
 	send_data(msg_buf, length);
-	waitDoingServicesInterruptible(500,got_ok,1);
-	if(send_debug) 
-	{ 
-		if(!got_ok)
-			printf_fast("%lu - breakBt() Did not get an OK\r\n", getMs());
-		else
-			printf_fast("%lu - breakBt() got OK\r\n", getMs());
+	waitDoingServicesInterruptible(1500,(!ble_connected),1);
+	if(ble_connected)
+	{
+		if(send_debug) 
+			printf_fast("%lu - breakBt() Did not disconnect\r\n", getMs());
+		return 0;
 	}
+	if(send_debug) 
+		printf_fast("%lu - breakBt() disconnected\r\n", getMs());
+	return 1;
 }
+
+// Send a pulse to the BlueTooth module SYS input
+void atBt() {
+	XDATA uint8 length;
+	got_ok = 0;
+	init_command_buff(&uart_buff);
+	length = sprintf(msg_buf, "AT");
+	send_data(msg_buf, length);
+	waitDoingServicesInterruptible(1500,got_ok,1);
+	if(!got_ok)
+	{
+		if(send_debug) 
+			printf_fast("%lu - atBt() Did not get an OK\r\n", getMs());
+		return;
+	}
+	if(send_debug) 
+		printf_fast("%lu - atBt() got OK\r\n", getMs());
+}
+
 
 // Configure the BlueTooth module with a name.
 void configBt() {
@@ -1992,13 +2015,13 @@ void main()
 	// Open the UART and set it up for comms to HM-10
 	openUart();
 	//init_command_buff(&usb_buff);
-	breakBt();
-	waitDoingServicesInterruptible(500,got_ok,1);
+	atBt();
+	//waitDoingServicesInterruptible(500,got_ok,1);
 	if(got_ok) {
 		got_ok =0;
 		setDigitalOutput(10,LOW);
-		breakBt();
-		waitDoingServicesInterruptible(500,got_ok,1);
+		atBt();
+		//waitDoingServicesInterruptible(500,got_ok,1);
 	}
 	if(got_ok) {
 		setFlag(XBRIDGE_HW,0);
@@ -2105,10 +2128,10 @@ void main()
 		// get the most recent battery capacity
 		battery_capacity = batteryPercent(adcRead(0 | ADC_REFERENCE_INTERNAL));
 		while (!do_sleep){
+			if(send_debug)
+				printf_fast("%lu - packet waiting\r\n", getMs());
+			setDigitalOutput(10,HIGH);
 			while(!ble_connected && (getMs() - pkt_time)<120000) {
-				if(send_debug)
-					printf_fast("%lu - packet waiting\r\n", getMs());
-				setDigitalOutput(10,HIGH);
 				waitDoingServicesInterruptible(1000, ble_connected,1);
 			}
 			if(ble_connected) {
@@ -2154,21 +2177,21 @@ void main()
 			// turn off the BLE module
 			if(sleep_ble){
 				ble_dly_ms = getMs();
-				while(ble_connected && ((getMs() - ble_dly_ms) <= 2000 )) {
-					breakBt();
-					waitDoingServicesInterruptible(1000,(!ble_connected),1);
+				while(ble_connected && ((getMs() - ble_dly_ms) <= 5500 )) 
+				{
+					//waitDoingServicesInterruptible(2000,(!ble_connected),1);
 					if(send_debug)
 						printf_fast("%lu - ble_connected = %d, P1_2 = %d\r\n", getMs(), ble_connected, P1_2);
-					if(ble_connected)
+					if(breakBt())
+					{
+						if(send_debug)
+							printf_fast("broke connection\r\n");
 						break;
-				}
-				if(send_debug) {
-					if(!ble_connected)
-						printf_fast("broke connection\r\n");
+					}
 					else
 						printf_fast("connection did not break, P1_2 is %d\r\n", P1_2);
-					printf_fast("turning off BLE\r\n");
 				}
+				printf_fast("turning off BLE\r\n");
 				setDigitalOutput(10,LOW);
 				ble_connected = 0;
 			}

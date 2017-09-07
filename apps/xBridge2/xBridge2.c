@@ -1686,7 +1686,7 @@ int controlProtocolService()
 		// reset the command timeout.
 		// if it is the end for the byte string, we need to process the command
 		//look for the strings we are interested in
-		if(uart_buff.nCurReadPos >=2 && strstr("OK", uart_buff.commandBuffer))
+		if(uart_buff.nCurReadPos >=2 && strstr("OK", uart_buff.commandBuffer) && ! got_ok)
 		{	
 			if(send_debug)
 				printf_fast("%lu - got OK\r\n");

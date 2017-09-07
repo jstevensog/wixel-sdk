@@ -1296,7 +1296,7 @@ BIT breakBt() {
 	init_command_buff(&uart_buff);
 	length = sprintf(msg_buf, "AT");
 	send_data(msg_buf, length);
-	waitDoingServicesInterruptible(1500,(!ble_connected),1);
+	waitDoingServicesInterruptible(5000,(!ble_connected),1);
 	if(ble_connected)
 	{
 		if(send_debug) 
@@ -1315,7 +1315,7 @@ void atBt() {
 	init_command_buff(&uart_buff);
 	length = sprintf(msg_buf, "AT");
 	send_data(msg_buf, length);
-	waitDoingServicesInterruptible(1500,got_ok,1);
+	waitDoingServicesInterruptible(500,got_ok,1);
 	if(!got_ok)
 	{
 		if(send_debug) 
@@ -1759,7 +1759,10 @@ int WaitForPacket(uint32 milliseconds, Dexcom_packet* pkt, uint8 channel)
 		printf_fast("%lu - start is %lu, waiting for packet on channel %u for %lu \r\n", getMs(), start, channel, milliseconds);
 	// safety first, make sure the channel is valid, and return with error if not.
 	if(channel >= NUM_CHANNELS)
+	{
+		printf_fast("%lu - missed a packet\r\n", getMs());
 		return -3;
+	}
 	// set the channel parameters using swap_channel
 	swap_channel(nChannels[channel], fOffset[channel]);
 	// while we haven't reached the delay......
@@ -2177,7 +2180,7 @@ void main()
 			// turn off the BLE module
 			if(sleep_ble){
 				ble_dly_ms = getMs();
-				while(ble_connected && ((getMs() - ble_dly_ms) <= 5500 )) 
+				while(ble_connected && ((getMs() - ble_dly_ms) <= 10500 )) 
 				{
 					//waitDoingServicesInterruptible(2000,(!ble_connected),1);
 					if(send_debug)
@@ -2189,7 +2192,8 @@ void main()
 						break;
 					}
 					else
-						printf_fast("connection did not break, P1_2 is %d\r\n", P1_2);
+						if(send_debug)
+							printf_fast("connection did not break, P1_2 is %d\r\n", P1_2);
 				}
 				printf_fast("turning off BLE\r\n");
 				setDigitalOutput(10,LOW);

@@ -1760,7 +1760,8 @@ int WaitForPacket(uint32 milliseconds, Dexcom_packet* pkt, uint8 channel)
 	// safety first, make sure the channel is valid, and return with error if not.
 	if(channel >= NUM_CHANNELS)
 	{
-		printf_fast("%lu - missed a packet\r\n", getMs());
+		if(send_debug)
+			printf_fast("%lu - missed a packet\r\n", getMs());
 		return -3;
 	}
 	// set the channel parameters using swap_channel

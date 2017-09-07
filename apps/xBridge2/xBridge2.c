@@ -1453,10 +1453,10 @@ uint8 init_command_buff(t_command_buff* pCmd)
 void openUart()
 {
 	XDATA uint8 i=0;
-	XDATA uint8 msg[2];
+//	XDATA uint8 msg[2];
 	init_command_buff(&uart_buff);
 	got_ok = 0;
-	sprintf(msg,"AT");
+//	sprintf(msg,"AT");
     uart1Init();
 	uart1SetParity(0);
 	uart1SetStopBits(1);
@@ -1471,9 +1471,10 @@ void openUart()
 				printf_fast("trying %lu\r\n", uart_baudrate[i]);
 			settings.uart_baudrate = uart_baudrate[i];
 			uart1SetBaudRate(uart_baudrate[i]);
-			send_data(msg,sizeof(msg));
+//			send_data(msg,sizeof(msg));
 
-			waitDoingServicesInterruptible(500,got_ok,1);
+//			waitDoingServicesInterruptible(1000,got_ok,1);
+			atBt();
 			if(got_ok) break;
 		}
 		if(!got_ok){
@@ -1656,23 +1657,39 @@ int controlProtocolService()
 		b = uart1RxReceiveByte();
 		if(send_debug)
 			printf_fast("%c",b);
-		if((uart_buff.nCurReadPos == 0 && b >126 ))
+		if(uart_buff.nCurReadPos == 0 && b >127 )
 		{
+			if(send_debug)
+				printf_fast("%lu - bad character, clearing buffer\r\n", getMs());
+			init_command_buff(&uart_buff);
+			continue;
+		}
+		//putchar(b);
+		uart_to = getMs();
+		uart_buff.commandBuffer[uart_buff.nCurReadPos] = b;
+		uart_buff.nCurReadPos++;
+		if(uart_buff.nCurReadPos >=8 && 
+			(
+				strstr(uart_buff.commandBuffer, "www.jnhuamao.cn") || 
+				strstr(uart_buff.commandBuffer, "OK+Set:xBridge") ||
+				strstr(uart_buff.commandBuffer, "OK+Set:1") ||
+				strstr(uart_buff.commandBuffer, "OK+RESET")
+			)
+		)
+		{
+			if(send_debug)
+				printf_fast("%lu - string to ignore, clearing buffer\r\n", getMs());
 			init_command_buff(&uart_buff);
 			return nRet;
 		}
-		//putchar(b);
-		uart_buff.commandBuffer[uart_buff.nCurReadPos] = b;
-		uart_buff.nCurReadPos++;
-		if(strstr("www.jnhuamao.cn", uart_buff.commandBuffer))
-			init_command_buff(&uart_buff);
 		//printf_fast("nCurReadPos is %u\r\n", uart_buff.nCurReadPos);
 		// reset the command timeout.
 		// if it is the end for the byte string, we need to process the command
 		//look for the strings we are interested in
 		if(uart_buff.nCurReadPos >=2 && strstr("OK", uart_buff.commandBuffer))
-		{		
-			printf_fast("%lu - got OK\r\n");
+		{	
+			if(send_debug)
+				printf_fast("%lu - got OK\r\n");
 			got_ok = 1;
 		}
 		if(uart_buff.nCurReadPos >= 7)
@@ -1682,16 +1699,21 @@ int controlProtocolService()
 				ble_connected = 1;
 				if(send_debug)
 					printf_fast("ble connected\r\n");
-				// clear command buffer if there was anything
+				init_command_buff(&uart_buff);
+				if(send_debug)
+					printf_fast("%lu - clearing buffer\r\n", getMs());
+				return nRet;
 			}
 			if (strstr("OK+LOST", uart_buff.commandBuffer)) 
 			{
 				ble_connected = 0;
 				if(send_debug)
 					printf_fast("ble disconnected\r\n");
-				// clear command buffer if there was anything
+				init_command_buff(&uart_buff);
+				if(send_debug)
+					printf_fast("%lu - clearing buffer\r\n", getMs());
+				return nRet;
 			}
-			init_command_buff(&uart_buff);
 		}
 		if(uart_buff.nCurReadPos && uart_buff.nCurReadPos == uart_buff.commandBuffer[0])
 		{
@@ -2015,7 +2037,7 @@ void main()
 	
 	//turn on HM-1x using P1_0
 	setDigitalOutput(10,HIGH);
-	waitDoingServices(500,1);
+	waitDoingServices(1000,1);
 	// Open the UART and set it up for comms to HM-10
 	openUart();
 	//init_command_buff(&usb_buff);

@@ -1686,7 +1686,7 @@ int controlProtocolService()
 		// reset the command timeout.
 		// if it is the end for the byte string, we need to process the command
 		//look for the strings we are interested in
-		if(uart_buff.nCurReadPos >=2 && strstr("OK", uart_buff.commandBuffer) && ! got_ok)
+		if(uart_buff.nCurReadPos >=2 && strstr(uart_buff.commandBuffer, "OK") && ! got_ok)
 		{	
 			if(send_debug)
 				printf_fast("%lu - got OK\r\n");
@@ -1694,7 +1694,7 @@ int controlProtocolService()
 		}
 		if(uart_buff.nCurReadPos >= 7)
 		{
-			if(strstr("OK+CONN", uart_buff.commandBuffer))
+			if(strstr(uart_buff.commandBuffer, "OK+CONN"))
 			{
 				ble_connected = 1;
 				if(send_debug)
@@ -1704,7 +1704,7 @@ int controlProtocolService()
 					printf_fast("%lu - clearing buffer\r\n", getMs());
 				return nRet;
 			}
-			if (strstr("OK+LOST", uart_buff.commandBuffer)) 
+			if (strstr(uart_buff.commandBuffer, "OK+LOST")) 
 			{
 				ble_connected = 0;
 				if(send_debug)
@@ -2111,6 +2111,7 @@ void main()
 			printf_fast("No dex_tx_id.  Sending beacon.\r\n");
 		// wait until we have a BLE connection
 		while(!ble_connected) doServices(1);
+		waitDoingServices(500,1);
 		//send a beacon packet
 		sendBeacon();
 		doServices(1);

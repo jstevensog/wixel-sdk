@@ -1711,9 +1711,9 @@ int controlProtocolService()
 				ble_connected = 0;
 				if(send_debug)
 					printf_fast("ble disconnected\r\n");
-				init_command_buff(&uart_buff);
 				if(send_debug)
 					printf_fast("%lu - clearing buffer of [%s]\r\n", getMs(), uart_buff.commandBuffer);
+				init_command_buff(&uart_buff);
 				return nRet;
 			}
 		}

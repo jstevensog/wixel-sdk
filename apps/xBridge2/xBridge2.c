@@ -133,6 +133,7 @@ static volatile BIT writing_flash;		// indicates if we are writing to flash.
 static volatile BIT ble_sleeping;		// indicates if we have recieved a message from the BLE module that it is sleeping, or if false, it is awake.
 static volatile BIT dex_tx_id_set;		// indicates if the Dexcom Transmitter id (settings.dex_tx_id) has been set.  Set in doServices.
 static volatile BIT ble_connected;		// bit indicating the BLE module is connected to the phone.  Prevents us from sending data without this.
+static volatile BIT uart_receiving;		// bit indicating data inbound on the UART from HM-1x module.
 static volatile BIT save_settings;		// flag to indicate that settings should be saved to flash.
 static volatile BIT got_packet;			// flag to indicate we have captured a packet.
 static volatile BIT got_ok;				// flag indicating we got OK from the HM-1x
@@ -1225,7 +1226,8 @@ uint32 dex_num_decoder(uint16 usShortFloat)
 void send_data( uint8 *msg, uint8 len)
 {
 	uint8 i = 0;
-	//wait until uart1 Tx Buffer is empty
+	//wait until uart1 is not processing a command
+	waitDoingServicesInterruptible(1000, uart_receiving,1);
 	if(send_debug)
 		printf_fast("%lu - send_data %s (%d)\r\n", getMs(), msg, len);
 	while(uart1TxAvailable() < len) {};
@@ -1660,7 +1662,7 @@ int controlProtocolService()
 		if(uart_buff.nCurReadPos == 0 && b >127 )
 		{
 			if(send_debug)
-				printf_fast("%lu - bad character, clearing buffer\r\n", getMs());
+				printf_fast("%lu - bad character, clearing buffer of [%s]\r\n", getMs(), uart_buff.commandBuffer);
 			init_command_buff(&uart_buff);
 			continue;
 		}
@@ -1678,7 +1680,7 @@ int controlProtocolService()
 		)
 		{
 			if(send_debug)
-				printf_fast("%lu - string to ignore, clearing buffer\r\n", getMs());
+				printf_fast("%lu - string to ignore, clearing buffer of [%s]\r\n", getMs(), uart_buff.commandBuffer);
 			init_command_buff(&uart_buff);
 			return nRet;
 		}
@@ -1699,9 +1701,9 @@ int controlProtocolService()
 				ble_connected = 1;
 				if(send_debug)
 					printf_fast("ble connected\r\n");
-				init_command_buff(&uart_buff);
 				if(send_debug)
-					printf_fast("%lu - clearing buffer\r\n", getMs());
+					printf_fast("%lu - clearing buffer of [%s]\r\n", getMs(), uart_buff.commandBuffer);
+				init_command_buff(&uart_buff);
 				return nRet;
 			}
 			if (strstr(uart_buff.commandBuffer, "OK+LOST")) 
@@ -1711,7 +1713,7 @@ int controlProtocolService()
 					printf_fast("ble disconnected\r\n");
 				init_command_buff(&uart_buff);
 				if(send_debug)
-					printf_fast("%lu - clearing buffer\r\n", getMs());
+					printf_fast("%lu - clearing buffer of [%s]\r\n", getMs(), uart_buff.commandBuffer);
 				return nRet;
 			}
 		}
@@ -1722,11 +1724,15 @@ int controlProtocolService()
 			nRet = doCommand();
 			//re-initialise the command buffer for the next one.
 			if(send_debug)
-				printf_fast("%lu - UART1 protocol done\r\n", getMs());
+				printf_fast("%lu - UART1 xBridge protocol done\r\n", getMs());
 			init_command_buff(&uart_buff);
 			// break out if we got a breaking command
 			return nRet;
 		}
+		if (uart_buff.nCurReadPos)
+			uart_receiving = 1;
+		else
+			uart_receiving = 0;
 	}	
 	return nRet;
 }

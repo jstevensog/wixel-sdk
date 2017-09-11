@@ -1707,7 +1707,7 @@ int controlProtocolService()
 		}
 		if(uart_buff.nCurReadPos >= 7)
 		{
-			if(strstr(uart_buff.commandBuffer, "OK+CONN"))
+			if(strstr(uart_buff.commandBuffer+2, "+CONN"))
 			{
 				ble_connected = 1;
 				if(send_debug)
@@ -1717,7 +1717,7 @@ int controlProtocolService()
 				init_command_buff(&uart_buff);
 				return nRet;
 			}
-			if (strstr(uart_buff.commandBuffer, "OK+LOST")) 
+			if (strstr(uart_buff.commandBuffer+2, "+LOST")) 
 			{
 				ble_connected = 0;
 				if(send_debug)

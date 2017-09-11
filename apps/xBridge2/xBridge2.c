@@ -1672,8 +1672,8 @@ int controlProtocolService()
 			b != 0x06
 			)
 		{
-			if(send_debug)
-				printf_fast("%lu - bad character [%x] (%c), not appending to buffer\r\n", getMs(), b, b);
+//			if(send_debug)
+//				printf_fast("%lu - bad character [%x] (%c), not appending to buffer\r\n", getMs(), b, b);
 			//init_command_buff(&uart_buff);
 			continue;
 		}
@@ -1690,8 +1690,8 @@ int controlProtocolService()
 			)
 		)
 		{
-			if(send_debug)
-				printf_fast("%lu - string to ignore, clearing buffer of [%s]\r\n", getMs(), uart_buff.commandBuffer);
+//			if(send_debug)
+//				printf_fast("%lu - string to ignore, clearing buffer of [%s]\r\n", getMs(), uart_buff.commandBuffer);
 			init_command_buff(&uart_buff);
 			return nRet;
 		}
@@ -1705,25 +1705,25 @@ int controlProtocolService()
 				printf_fast("%lu - got OK\r\n", getMs());
 			got_ok = 1;
 		}
-		if(uart_buff.nCurReadPos >= 7)
+		if(uart_buff.nCurReadPos >= 7 && uart_buff.nCurReadPos <= 9)
 		{
-			if(strstr(uart_buff.commandBuffer+2, "+CONN"))
+			if(strstr(uart_buff.commandBuffer+2, "+CONN") && !ble_connected)
 			{
 				ble_connected = 1;
 				if(send_debug)
 					printf_fast("ble connected\r\n");
-				if(send_debug)
-					printf_fast("%lu - clearing buffer of [%s]\r\n", getMs(), uart_buff.commandBuffer);
+//				if(send_debug)
+//					printf_fast("%lu - clearing buffer of [%s]\r\n", getMs(), uart_buff.commandBuffer);
 				init_command_buff(&uart_buff);
 				return nRet;
 			}
-			if (strstr(uart_buff.commandBuffer+2, "+LOST")) 
+			if (strstr(uart_buff.commandBuffer+2, "+LOST") && ble_connected) 
 			{
 				ble_connected = 0;
 				if(send_debug)
 					printf_fast("ble disconnected\r\n");
-				if(send_debug)
-					printf_fast("%lu - clearing buffer of [%s]\r\n", getMs(), uart_buff.commandBuffer);
+//				if(send_debug)
+//					printf_fast("%lu - clearing buffer of [%s]\r\n", getMs(), uart_buff.commandBuffer);
 				init_command_buff(&uart_buff);
 				return nRet;
 			}

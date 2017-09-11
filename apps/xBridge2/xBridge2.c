@@ -1227,9 +1227,13 @@ void send_data( uint8 *msg, uint8 len)
 {
 	uint8 i = 0;
 	//wait until uart1 is not processing a command
-	waitDoingServicesInterruptible(1000, uart_receiving,1);
 	if(send_debug)
 		printf_fast("%lu - send_data %s (%d)\r\n", getMs(), msg, len);
+	if(uart_receiving){
+		if(send_debug)
+			printf_fast("%lu - send_data blocked on uart1 input\r\n",getMs());
+		waitDoingServicesInterruptible(250, uart_receiving, 1);
+	}
 	while(uart1TxAvailable() < len) {};
 	if(usb_connected && send_debug)
 		printf_fast("Sending: ");
@@ -1657,13 +1661,20 @@ int controlProtocolService()
 	while(uart1RxAvailable() && uart_buff.nCurReadPos < USB_COMMAND_MAXLEN)
 	{
 		b = uart1RxReceiveByte();
+		if(uart_buff.nCurReadPos == 0 && b == 0)
+			continue;
 		if(send_debug)
 			printf_fast("%c",b);
-		if(uart_buff.nCurReadPos == 0 && b >127 )
+		if(uart_buff.nCurReadPos == 0 && 
+			b > 127 &&
+			b != 0x4F && 
+			b != 0x02 &&
+			b != 0x06
+			)
 		{
 			if(send_debug)
-				printf_fast("%lu - bad character, clearing buffer of [%s]\r\n", getMs(), uart_buff.commandBuffer);
-			init_command_buff(&uart_buff);
+				printf_fast("%lu - bad character [%x] (%c), not appending to buffer\r\n", getMs(), b, b);
+			//init_command_buff(&uart_buff);
 			continue;
 		}
 		//putchar(b);
@@ -1691,7 +1702,7 @@ int controlProtocolService()
 		if(uart_buff.nCurReadPos >=2 && strstr(uart_buff.commandBuffer, "OK") && ! got_ok)
 		{	
 			if(send_debug)
-				printf_fast("%lu - got OK\r\n");
+				printf_fast("%lu - got OK\r\n", getMs());
 			got_ok = 1;
 		}
 		if(uart_buff.nCurReadPos >= 7)
@@ -1717,7 +1728,9 @@ int controlProtocolService()
 				return nRet;
 			}
 		}
-		if(uart_buff.nCurReadPos && uart_buff.nCurReadPos == uart_buff.commandBuffer[0])
+		if((uart_buff.commandBuffer[0] == 0x02 || uart_buff.commandBuffer[0] == 0x06)
+			&& uart_buff.nCurReadPos 
+			&& uart_buff.nCurReadPos == uart_buff.commandBuffer[0])
 		{
 			uart_to = 0;
 			// do the command

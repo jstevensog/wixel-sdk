@@ -90,7 +90,7 @@ elsewhere.  This small bridge rig should be kept nearby the T1D at all times.
 #include <uart1.h>
 
 //define the xBridge Version
-#define VERSION ("2.47b")
+#define VERSION ("2.47e")
 //define the FLASH_TX_ID address.  This is the address we store the Dexcom TX ID number in.
 //#define FLASH_TX_ID		(0x77F8)
 //define the DEXBRIDGE_FLAGS address.  This is the address we store the xBridge flags in.
@@ -133,13 +133,15 @@ static volatile BIT writing_flash;		// indicates if we are writing to flash.
 static volatile BIT ble_sleeping;		// indicates if we have recieved a message from the BLE module that it is sleeping, or if false, it is awake.
 static volatile BIT dex_tx_id_set;		// indicates if the Dexcom Transmitter id (settings.dex_tx_id) has been set.  Set in doServices.
 static volatile BIT ble_connected;		// bit indicating the BLE module is connected to the phone.  Prevents us from sending data without this.
+static volatile BIT uart_receiving;		// bit indicating data inbound on the UART from HM-1x module.
 static volatile BIT save_settings;		// flag to indicate that settings should be saved to flash.
 static volatile BIT got_packet;			// flag to indicate we have captured a packet.
 static volatile BIT got_ok;				// flag indicating we got OK from the HM-1x
 static volatile BIT do_leds;			// flag indicating to NOT show LEDs
-static volatile BIT send_debug;			// flag indicating to send debug output
+static volatile BIT send_debug = 1;			// flag indicating to send debug output
 static volatile BIT sleep_ble;			// flag indicating to sleep the BLE module (power down in sleep)
 static volatile uint32 dly_ms = 0;
+static volatile XDATA uint32 ble_dly_ms = 0;
 static volatile uint32 pkt_time = 0;
 // these flags will be stored in Flash
 static volatile BIT initialised;					// flag to indicate we have passed the initialisation.
@@ -207,7 +209,7 @@ typedef struct _command_buff
 } t_command_buff;
 
 //create a static command structure to use.
-static t_command_buff command_buff;
+XDATA static t_command_buff uart_buff, usb_buff;
 
 void setFlag(uint8 ptr, uint8 val)
 {
@@ -251,6 +253,12 @@ int doServices(uint8 bWithProtocol);
 uint8 batteryPercent(uint16 val);
 // prototype for sendBeacon function
 void sendBeacon(void);
+// prototype for breakBt function.
+BIT breakBt(void);
+// prototype for atBt function
+void atBt(void);
+// prototype for init_command_buff
+uint8 init_command_buff(t_command_buff* pCmd);
 
 
 // frequency offsets for each channel - seed to 0.
@@ -657,26 +665,22 @@ void saveSettingsToFlash()
 			printf_fast("settings saved to flash\r\n");
 } 
 
-
 // store RF config in FLASH, and retrieve it from here to put it in proper location (also incidentally in flash).
 // this allows persistent storage of RF params that will survive a restart of the wixel (although not a reload of wixel app obviously).
 // TO-DO get this working with DMA - need to erase memory block first, then write this to it.
-//uint8 XDATA RF_Params[50];
-
 
 void LoadRFParam(unsigned char XDATA* addr, uint8 default_val)
 {
 		*addr = default_val; 
 }
 
-
 /*
-void uartDisable() {
-    U1UCR &= ~0x40; //Hardware Flow Control (CTS/RTS) Off.  We always want it off.
-//    U1CSR &= ~0x40; // Recevier disable.
-}
+*  End of Flash functions
 */
 
+/*
+** Radio Settings Function - Initialises the CC2511 radio for Dexcom G4 transmitter signal reception.
+*/
 void dex_RadioSettings()
 {
     // Transmit power: one of the highest settings, but not the highest.
@@ -780,29 +784,17 @@ void dex_RadioSettings()
 }
 
 
+/* 
+** Dexcom Transmitter ID functions
+*/
+
+// Utility function to compare and return the minimum of two 8 bit values
 uint8 min8(uint8 a, uint8 b)
 {
 	if(a < b) return a;
 	return b;
 }
 
-
-/*
-// getPacketRSSI - returns the RSSI value from the Dexcom_packet passed to it.
-int8 getPacketRSSI(Dexcom_packet* p)
-{
-	// RSSI_OFFSET for 489 kbaud is closer to 73 than 71
-	return (p->RSSI/2)-73;
-}
-
-
-//getPacketPassedChecksum - returns the checksum of the Dexcom_packet passed to it.
-uint8 getPacketPassedChecksum(Dexcom_packet* p)
-{
-	//take the LQI value from the packet, AND with 0x80.  If it equals 0x80, then return 1, otherwise return 0.
-	return ((p->LQI & 0x80)==0x80) ? 1:0;
-}
-*/
 //format an array to decode the dexcom transmitter name from a Dexcom packet source address.
 XDATA char SrcNameTable[32] = { '0', '1', '2', '3', '4', '5', '6', '7',
 						  '8', '9', 'A', 'B', 'C', 'D', 'E', 'F',
@@ -823,23 +815,17 @@ char *dexcom_src_to_ascii(uint32 src)
 	return (char *)addr;
 }
 
+/*
+** End of Dexcom Transmitter ID functions
+*/
 
+// Utility function to enable the UART
 void uartEnable() {
     U1UCR &= ~0x40; //Hardware Flow Control (CTS/RTS) Off.  We always want it off.
     U1CSR |= 0x40; // Recevier enable
 }
 
-// function to wait a specified number of milliseconds, whilst processing services.
-/*void waitDoingServices (uint32 wait_time, volatile BIT break_flag, BIT bProtocolServices ) {
-	XDATA uint32 start_wait;
-	start_wait = getMs();
-	while ((getMs() - start_wait) < wait_time) {
-		doServices(bProtocolServices);
-		if(break_flag) return;
-		delayMs(20);
-	}
-}
-*/
+// Macros for waitDoingServices calls.
 #define waitDoingServicesInterruptible(wait_time, break_flag, bProtocolServices) \
   do { \
 	XDATA uint32 start_wait; \
@@ -864,9 +850,12 @@ void uartEnable() {
 
 
 
-/** Functions *****************************************************************/
-/* the functions that puts the system to sleep (PM2) and configures sleep timer to
-wake it again in 250 seconds.*/
+/*
+** Sleep Functions ****************************************************************
+*/
+/* the functions that puts the system to sleep (PM1 / PM2) and configures sleep timer to
+wake it again.*/
+// function to make all CC2511 outputs low before going to sleep.
 void makeAllOutputs(BIT value)
 {
 	//we only make the P1_ports low, and not P1_2 or P1_3
@@ -879,11 +868,13 @@ void makeAllOutputs(BIT value)
     }
 }
 
+//function to initialise the Event0 interrupt, to wake the CC2511 at the prescribed time
 void sleepInit(void)
 {
    WORIRQ  |= (1<<4); // Enable Event0 interrupt  
 }
 
+//ISR function that is called when the Sleep Timer expires.
 ISR(ST, 1)
 {
    // Clear IRCON.STIF (Sleep Timer CPU interrupt flag)
@@ -895,6 +886,7 @@ ISR(ST, 1)
    SLEEP &= 0xFC; // Not required when resuming from PM0; Clear SLEEP.MODE[1:0]
 }
 
+// function to switch to the RCOSC prior to goint to sleep.
 void switchToRCOSC(void)
 {
    // Power up [HS RCOSC] (SLEEP.OSC_PD = 0)
@@ -910,9 +902,22 @@ void switchToRCOSC(void)
    SLEEP |= 0x04;
 }
 
+//function to switch to HSXOSC when we wake.
+void switchToHSXOSC(void)
+{
+	// Power up [HS XOSC] (SLEEP.OSC_PD = 0)
+	SLEEP &= ~0x04;
+	// Wait until [HS XOSC] is stable (SLEEP.XOSC_STB = 1)
+	while ( ! (SLEEP & 0x40) );
+	// Switch system clock source to [HS XOSC] (CLKCON.OSC = 0)
+	CLKCON &= ~0x40;
+	// Wait until system clock source has actually changed (CLKCON.OSC = 0)
+	while ( CLKCON & 0x40 );
+	// Power down [HS RCOSC] (SLEEP.OSC_PD = 1)
+	SLEEP |= 0x04;
+}
 
-
-
+// Calculate the time we need to sleep in order to wake up in time to get a packet.
 uint32 calcSleep(uint16 seconds) {
 	uint32 diff = 0;
 	//XDATA uint32 now = 0;
@@ -938,41 +943,53 @@ uint32 calcSleep(uint16 seconds) {
 	return diff;
 }
 
+// function to put the CC2511 to sleep, in the appropriate PM, for the specified number of seconds.
 void goToSleep (uint16 seconds) {
     unsigned char temp;
 	//uint16 sleep_time = 0;
 	unsigned short sleep_time = 0;
-	unsigned short this_sleep_time = 10;
+	unsigned short this_sleep_time = 10000;
 	uint32 sleep_time_ms = 0;
+	uint32 seconds_ms = seconds;
+	seconds_ms *= 1000;
 	//initialise sleep library
 	sleepInit();
 
     // The wixel docs note that any high output pins consume ~30uA
     makeAllOutputs(LOW);
-	while(usb_connected && (usbComTxAvailable() < 128)) {
-		usbComService();
-	}
 	is_sleeping = 1;
 	//calculate the time we will sleep in total.
 	sleep_time_ms = calcSleep(seconds);
 	sleep_time = (unsigned short)(sleep_time_ms/1000);
 	// we wake up every 10 seconds to recalibrate the RCOSC.  
 	//The first time may be less than 10 seconds, in case we calculate value that is not wholey divisible by 10.
-	while(sleep_time > 0)		
+	//while(sleep_time > 0)
+	while(sleep_time_ms >0 )
 	{
-		if( sleep_time % 10 == 0)
+		if( sleep_time_ms % 10000 == 0)
 		{
-			this_sleep_time = 10;
+			this_sleep_time = 10000;
 		}
 		else
 		{
-			this_sleep_time = sleep_time % 10;
+			this_sleep_time = sleep_time_ms % 10000;
 		}
-		sleep_time -= this_sleep_time;
-		if (this_sleep_time == 0 || sleep_time > seconds) {
+		sleep_time_ms -= this_sleep_time;
+		if(send_debug)
+			printf_fast("%lu - sleep_time_ms is %lu, this_sleep_time is %u\r\n", getMs(), sleep_time_ms, this_sleep_time);
+		if (this_sleep_time < 5000 || this_sleep_time > 10000) {
 			if(send_debug)
-				printf_fast("too late to sleep, cancelling\r\n");
+				printf_fast("this_sleep_time is %u, so skipping this iteration.\r\n", this_sleep_time);
+			continue;
+		}
+		if (sleep_time_ms > seconds_ms) {
+			//printf_fast(" sleep_time too short.  Not sleeping.");
+			if(send_debug)
+				printf_fast("sleep_time_ms (%lu) is greater than seconds_ms (%lu).\r\n", sleep_time_ms, seconds_ms);
 			return;
+		}
+		while(usb_connected && (usbComTxAvailable() < 128)) {
+			usbComService();
 		}
 		if(!usb_connected)
 		{
@@ -984,10 +1001,8 @@ void goToSleep (uint16 seconds) {
 			// disable the USB module
 			SLEEP &= ~(1<<7); // Disable the USB module (SLEEP.USB_EN = 0).
 			// sleep power mode 2 is incompatible with USB - as USB registers lose state in this mode.
-
-	   
-			// set Sleep Timer to the lowest resolution (1 second)      
-			WORCTRL |= 0x03;
+			// set Sleep Timer to the ms resolution      
+			WORCTRL |= 0x01;
 			// must be using RC OSC before going to PM2
 			switchToRCOSC();
 			
@@ -1024,8 +1039,6 @@ void goToSleep (uint16 seconds) {
 			IEN1 &= ~0x3F;
 			IEN2 &= ~0x3F;
 			
-			//printf_fast("sleep_time: %u\r\n", sleep_time);
-			//pkt_time += sleep_time_ms;
 			WORCTRL |= 0x04; // Reset Sleep Timer, set resolution to 1 clock cycle
 			temp = WORTIME0;
 			while(temp == WORTIME0); // Wait until a positive 32 kHz edge
@@ -1034,7 +1047,7 @@ void goToSleep (uint16 seconds) {
 			WOREVT1 = this_sleep_time >> 8; // Set EVENT0, high byte
 			WOREVT0 = this_sleep_time; // Set EVENT0, low byte
 			MEMCTR |= 0x02;  // Flash cache must be disabled.
-			SLEEP = 0x06; // PM2, disable USB, power down other oscillators
+			SLEEP = (SLEEP & 0xFC) | 0x06; // PM2, disable USB, power down other oscillators
 			
 			__asm nop __endasm; 
 			__asm nop __endasm; 
@@ -1057,11 +1070,11 @@ void goToSleep (uint16 seconds) {
 				DMAARM |= 0x01; // Set DMA0ARM
 	   
 			// Switch back to high speed
-			boardClockInit();   
+			switchToHSXOSC();
 
 		} else {
-			// set Sleep Timer to the lowest resolution (1 second)      
-			WORCTRL |= 0x03; // WOR_RES[1:0]
+			// set Sleep Timer to the ms resolution      
+			WORCTRL |= 0x01;
 			// make sure interrupts aren't completely disabled
 			// and enable sleep timer interrupt
 			IEN0 |= 0xA0; // Set EA and STIE bits
@@ -1094,7 +1107,7 @@ void goToSleep (uint16 seconds) {
 			// interrupts are effectively blocked when reaching this code position.
 			// If the SLEEP.MODE bits have been cleared at this point, which means
 			// that an ISR has indeed executed in between the above NOPs, then the
-			// application will not enter PM{1  3} !
+			// application will not enter PM{1 - 3} !
 	   
 			if (SLEEP & 0x03) // SLEEP.MODE[1:0]
 			{
@@ -1105,13 +1118,22 @@ void goToSleep (uint16 seconds) {
 				__asm nop __endasm;    
 			}
 			// Switch back to high speed      
-			boardClockInit(); 
+			//boardClockInit();
+			switchToHSXOSC();
 		}
-		addMs(this_sleep_time * 1000);
+		//addMs(this_sleep_time * 1000);
+		addMs(this_sleep_time);
 	}
+	//addMs(sleep_time_ms);
+	boardClockInit();
 	is_sleeping = 0;
 }
 
+/*
+** End of Sleep Functions **
+*/
+
+// utility function to update the leds.  Called in doServices()
 void updateLeds()
 {
 	LED_GREEN( usb_connected & do_leds);
@@ -1126,7 +1148,8 @@ void updateLeds()
 		else 
 		{
 			if(getFlag(SLEEP_BLE)){
-				LED_YELLOW(ble_connected);
+				//LED_YELLOW(ble_connected);
+				LED_YELLOW(P1_2);
 			}
 		}
 		if(dex_tx_id_set)
@@ -1146,7 +1169,7 @@ void updateLeds()
 	}
 }
 
-// This is called by printf and printPacket.
+// Utility function to print a character out the USB port.  This is called by printf and printPacket.
 void putchar(char c)
 {
 //	uart1TxSendByte(c);
@@ -1154,8 +1177,7 @@ void putchar(char c)
 		usbComTxSendByte(c);
 }
 
-
-//return a byte reversed from that passed.
+// Utility function to return a byte reversed from that passed.
 uint8 bit_reverse_byte(uint8 in)
 {
 	uint8 bRet = 0;
@@ -1177,7 +1199,8 @@ uint8 bit_reverse_byte(uint8 in)
 		bRet |= 0x01;
 	return bRet;
 }
-//reverse a byte buffer
+
+// Utility function to reverse a byte buffer
 void bit_reverse_bytes(uint8* buf, uint8 nLen)
 {
 	uint8 i = 0;
@@ -1187,7 +1210,7 @@ void bit_reverse_bytes(uint8* buf, uint8 nLen)
 	}
 }
 
-//decode the dex number (unsigned short float) as an unsigned 32bit integer.
+// Utility function to decode the dex number (unsigned short float) as an unsigned 32bit integer.
 uint32 dex_num_decoder(uint16 usShortFloat)
 {
 	uint16 usReversed = usShortFloat;
@@ -1199,36 +1222,51 @@ uint32 dex_num_decoder(uint16 usShortFloat)
 	return usMantissa << usExponent;
 }
 
-
+// Utility function to send a message buffer out the uart and USB (if connected)
 void send_data( uint8 *msg, uint8 len)
 {
 	uint8 i = 0;
-	//wait until uart1 Tx Buffer is empty
+	//wait until uart1 is not processing a command
+	if(send_debug)
+		printf_fast("%lu - send_data %s (%d)\r\n", getMs(), msg, len);
+	if(uart_receiving){
+		if(send_debug)
+			printf_fast("%lu - send_data blocked on uart1 input\r\n",getMs());
+		waitDoingServicesInterruptible(250, uart_receiving, 1);
+	}
 	while(uart1TxAvailable() < len) {};
+	if(usb_connected && send_debug)
+		printf_fast("Sending: ");
 	for(i=0; i < len; i++)
 	{
 		uart1TxSendByte(msg[i]);
+		if(usb_connected && send_debug)
+			usbComTxSendByte(msg[i]);
+		
 	}
-//	while(uart1TxAvailable()<255) waitDoingServices(20,0,1);
-	while(uart1TxAvailable()<255) waitDoingServices(20,1);
-	if(usb_connected) {
+	if(usb_connected && send_debug)
+		printf_fast("\r\nResponse: ");
+	while(uart1TxAvailable()<255);
+/*	if(usb_connected) {
 		if(send_debug)
 			printf_fast("Sending: ");
-		while(usbComTxAvailable() < len) {};
+		while(usbComTxAvailable() < len) 
+			doServices(1);
 		for(i=0; i < len; i++)
 		{
 			usbComTxSendByte(msg[i]);
 		}
-//		while(usbComTxAvailable()<128) waitDoingServices(20,0,1);
-		while(usbComTxAvailable()<128) waitDoingServices(20,1);
+		while(usbComTxAvailable()<128) 
+			waitDoingServices(20,1);
 		if(send_debug)
 			printf_fast("\r\nResponse: ");
 	}
+*/
 }
 
 
 // function called by doServices to monitor the state of the BLE connection
-void bleConnectMonitor() {
+/*void bleConnectMonitor() {
 	//to store the time we went high
 	static uint32 timer;
 	//to store P1_2 the last time we looked.
@@ -1256,15 +1294,44 @@ void bleConnectMonitor() {
 		sent_beacon = 0;
 	}
 }
+*/
 // Send a pulse to the BlueTooth module SYS input
-/*void breakBt() {
-	//pulse P1_2 high
-	setDigitalOutput(12,HIGH);
-	LED_RED(1);
-	delayMs(200);
-	//send P1_2 low
-	setDigitalOutput(12,LOW);
-}*/
+BIT breakBt() {
+	XDATA uint8 length;
+	got_ok = 0;
+	init_command_buff(&uart_buff);
+	length = sprintf(msg_buf, "AT");
+	send_data(msg_buf, length);
+	waitDoingServicesInterruptible(5000,(!ble_connected),1);
+	if(ble_connected)
+	{
+		if(send_debug) 
+			printf_fast("%lu - breakBt() Did not disconnect\r\n", getMs());
+		return 0;
+	}
+	if(send_debug) 
+		printf_fast("%lu - breakBt() disconnected\r\n", getMs());
+	return 1;
+}
+
+// Send a pulse to the BlueTooth module SYS input
+void atBt() {
+	XDATA uint8 length;
+	got_ok = 0;
+	init_command_buff(&uart_buff);
+	length = sprintf(msg_buf, "AT");
+	send_data(msg_buf, length);
+	waitDoingServicesInterruptible(500,got_ok,1);
+	if(!got_ok)
+	{
+		if(send_debug) 
+			printf_fast("%lu - atBt() Did not get an OK\r\n", getMs());
+		return;
+	}
+	if(send_debug) 
+		printf_fast("%lu - atBt() got OK\r\n", getMs());
+}
+
 
 // Configure the BlueTooth module with a name.
 void configBt() {
@@ -1281,7 +1348,10 @@ void configBt() {
     send_data(msg_buf, length);
 //	waitDoingServices(500,0,1);
 	waitDoingServices(500,1);
-/*	length = sprintf(msg_buf, "AT+RELI1");
+	length = sprintf(msg_buf, "AT+NOTI1");
+    send_data(msg_buf, length);
+	waitDoingServices(500,1);
+    /*	length = sprintf(msg_buf, "AT+RELI1");
     send_data(msg_buf, length);
 	waitDoingServices(500,0,1);	
 */	length = sprintf(msg_buf,"AT+RESET");
@@ -1355,56 +1425,7 @@ void print_packet(Dexcom_packet* pPkt)
 	send_data( (uint8 XDATA *)msg, msg.size);
 }
 
-//function to print the passed Dexom_packet as either binary or ascii.
-/*void printf_packet(Dexcom_packet* pPkt)
-{
-	char *srcAddr;
-	//first normalise the pPkt-txId
-	//uint8 txid = (pPkt->txId & 0xFC) >> 2;
-
-	//Next, convert the pPkt->src_addr to a string and store it in the global srcAddr array for printing.
-	if(usb_connected) {
-		srcAddr = dexcom_src_to_ascii(pPkt->src_addr);
-	*/
-	/*
-	uint8	len;
-	uint32	dest_addr;
-	uint32	src_addr;
-	uint8	port;
-	uint8	device_info;
-	uint8	txId;
-	uint16	raw;
-	uint16	filtered;
-	uint8	battery;
-	uint8	unknown;
-	uint8	checksum;
-	int8	RSSI;
-	uint8	LQI;
-	*/
-		//print it comma separated.
-		//printf_fast("%s,%lu,%lu,%hhu,%hhi,%hhu\r\n",
-/*		printf_fast("len:%u, dest_addr:%lu, src_addr:%lu (%s), port:%u, device_info:%u, txId:%u, raw:%u (%lu), filtered:%u (%lu), battery:%u, RSSI:%i, LQI:%u\r\n",
-			pPkt->len,
-			pPkt->dest_addr,
-			pPkt->src_addr,
-			srcAddr,
-			pPkt->port,
-			pPkt->device_info,
-			pPkt->txId,
-			pPkt->raw,
-			dex_num_decoder(pPkt->raw),
-			pPkt->filtered,
-			2 * dex_num_decoder(pPkt->filtered),
-			pPkt->battery,
-			pPkt->RSSI,
-			pPkt->LQI);
-			
-			//txid);r	
-	}
-	
-}
-*/
-//function to send a beacon with the TXID
+// Utility function to send a beacon packet with the TXID
 void sendBeacon()
 {
 	//char array to store the response in.
@@ -1424,7 +1445,7 @@ void sendBeacon()
 }
 
 
-//initialise the USB port
+// Utility initialise the USB port
 uint8 init_command_buff(t_command_buff* pCmd)
 {
 	if(!pCmd)
@@ -1434,12 +1455,14 @@ uint8 init_command_buff(t_command_buff* pCmd)
 	return 0;
 }
 
-//Open the UART and set 9600,n,1 parameters.
+//Utility function to open the UART and set 9600,n,1 parameters.
 void openUart()
 {
 	XDATA uint8 i=0;
-	XDATA uint8 msg[2];
-	sprintf(msg,"AT");
+//	XDATA uint8 msg[2];
+	init_command_buff(&uart_buff);
+	got_ok = 0;
+//	sprintf(msg,"AT");
     uart1Init();
 	uart1SetParity(0);
 	uart1SetStopBits(1);
@@ -1449,14 +1472,15 @@ void openUart()
 		if(send_debug)
 			printf_fast("Determining HM-1x baudrate \r\n");
 		for(i=0;i<=8;i++) {
-			init_command_buff(&command_buff);
+			init_command_buff(&uart_buff);
 			if(send_debug)
 				printf_fast("trying %lu\r\n", uart_baudrate[i]);
 			settings.uart_baudrate = uart_baudrate[i];
 			uart1SetBaudRate(uart_baudrate[i]);
-			send_data(msg,sizeof(msg));
-//			waitDoingServices(500,got_ok,1);
-			waitDoingServicesInterruptible(500,got_ok,1);
+//			send_data(msg,sizeof(msg));
+
+//			waitDoingServicesInterruptible(1000,got_ok,1);
+			atBt();
 			if(got_ok) break;
 		}
 		if(!got_ok){
@@ -1467,7 +1491,7 @@ void openUart()
 	}
 	uart1SetBaudRate(settings.uart_baudrate); // Set saved baudrate
 
-	init_command_buff(&command_buff);
+	init_command_buff(&uart_buff);
 //	P1DIR |= 0x08; // RTS
 	//U1UCR &= ~0x4C;	//disable CTS/RTS on UART1, no Parity, 1 Stop Bit
 }
@@ -1477,9 +1501,10 @@ void openUart()
 int commandBuffIs(char* command)
 {
 	uint8 len = strlen(command);
-	if(len != command_buff.nCurReadPos)
+	if(len != uart_buff.nCurReadPos) {
 		return 0;
-	return memcmp(command, command_buff.commandBuffer, len)==0;
+	}
+	return memcmp(command, uart_buff.commandBuffer, len)==0;
 }
 
 // return code dictates whether to cancel out of current packet wait operation.
@@ -1499,11 +1524,11 @@ int doCommand()
 	/* command 0x01 preceeds a TXID being sent by controlling device on UART1.  Packet length is 6 bytes.
 		0x01, lsw2, lsw1, msw2, msw1
 	*/
-	if(command_buff.commandBuffer[1] == 0x01 && command_buff.commandBuffer[0] == 0x06)
+	if(uart_buff.commandBuffer[1] == 0x01 && uart_buff.commandBuffer[0] == 0x06)
 	{
 		if(send_debug)
 			printf_fast("Processing TXID packet\r\n");
-		memcpy(&settings.dex_tx_id, &command_buff.commandBuffer[2],sizeof(settings.dex_tx_id));
+		memcpy(&settings.dex_tx_id, &uart_buff.commandBuffer[2],sizeof(settings.dex_tx_id));
 		saveSettingsToFlash();
 		// send back the TXID we think we got in response
 		if(send_debug)
@@ -1516,15 +1541,14 @@ int doCommand()
 		0x02, 0xF0
 	*/
 	// if do_sleep is set already, don't process it
-	if(command_buff.commandBuffer[0] == 0x02 && command_buff.commandBuffer[1] == 0xF0 && !do_sleep) {
+	if(uart_buff.commandBuffer[0] == 0x02 && uart_buff.commandBuffer[1] == 0xF0 && !do_sleep) {
 		if(send_debug)
-			printf_fast("Processing ACK packet\r\n");
+			printf_fast("%lu - Processing ACK packet\r\n", getMs());
 		do_sleep = 1;
-		init_command_buff(&command_buff);
 		return(0);
 	}
 	// 's' command for status
-	if(command_buff.commandBuffer[0] == 0x53 || command_buff.commandBuffer[0] == 0x73) {
+	if(usb_buff.commandBuffer[0] == 0x53 || usb_buff.commandBuffer[0] == 0x73) {
 		printf_fast("Processing Status Command\r\nxBridge v%s\r\n", VERSION);
 		printf_fast("dex_tx_id: %lu (%s)\r\n", settings.dex_tx_id, dexcom_src_to_ascii(settings.dex_tx_id));
 		printf_fast("initialised: %u, sleep_ble: %u, dont_ignore_ble_state: %u, xBridge_hardware: %u, send_debug: %u, do_leds: %u\r\n",
@@ -1543,7 +1567,7 @@ int doCommand()
 		printf_fast("current ms: %lu\r\n", getMs());
 	}
 	// 'd' command for debug output toggle
-	if(command_buff.commandBuffer[0] == 0x44 || command_buff.commandBuffer[0] == 0x64) {
+	if(usb_buff.commandBuffer[0] == 0x44 || usb_buff.commandBuffer[0] == 0x64) {
 		setFlag(SEND_DEBUG,!getFlag(SEND_DEBUG));
 		saveSettingsToFlash();
 		send_debug = getFlag(SEND_DEBUG);
@@ -1553,7 +1577,7 @@ int doCommand()
 			printf_fast("debug output off\r\n");
 	}
 	// 'b' command for toggle of powering down the BLE module
-	if(command_buff.commandBuffer[0] == 0x42 || command_buff.commandBuffer[0] == 0x62) {
+	if(usb_buff.commandBuffer[0] == 0x42 || usb_buff.commandBuffer[0] == 0x62) {
 		setFlag(SLEEP_BLE,!getFlag(SLEEP_BLE));
 		saveSettingsToFlash();
 		sleep_ble = getFlag(SLEEP_BLE);
@@ -1563,7 +1587,7 @@ int doCommand()
 			printf_fast("BLE Sleeping off\r\n");
 	}
 	// 'l' command to toggle LEDs.
-	if(command_buff.commandBuffer[0] == 0x4C || command_buff.commandBuffer[0] == 0x6C) {
+	if(usb_buff.commandBuffer[0] == 0x4C || usb_buff.commandBuffer[0] == 0x6C) {
 		setFlag(DO_LEDS,!getFlag(DO_LEDS));
 		saveSettingsToFlash();
 		do_leds = getFlag(DO_LEDS);
@@ -1573,7 +1597,7 @@ int doCommand()
 			printf_fast("LEDs are off\r\n");
 	}
 	// 'p' command for resetting the Battery Limit values to defaults
-	if(command_buff.commandBuffer[0] == 0x50 || command_buff.commandBuffer[0] == 0x70) 
+	if(usb_buff.commandBuffer[0] == 0x50 || usb_buff.commandBuffer[0] == 0x70) 
 	{
 		if(getFlag(XBRIDGE_HW)) {
 			settings.battery_maximum = BATTERY_MAXIMUM;
@@ -1586,79 +1610,143 @@ int doCommand()
 		saveSettingsToFlash();
 		printf_fast("Reseting Battery Limits to Defaults\r\n");
 	}
-	if(commandBuffIs("OK")) {
-		got_ok = 1;
-		return(0);
-	}
-/*	if(commandBuffIs("OK+SLEE")) {
-		ble_sleeping=1;
-		return(0);
-	}
-	if(commandBuffIs("OK+WAKE")) {
-		ble_sleeping=0;
-		return(0);
-	}
-*/	// we don't respond to unrecognised commands.
+	// we don't respond to unrecognised commands.
 	return 1;
 }
 
 // Process any commands on either UART0 or USB COM.
 int controlProtocolService()
 {
-	static uint32 cmd_to;
+	static uint32 cmd_to, uart_to;
 	// ok this is where we check if there's anything happening incoming on the USB COM port or UART 0 port.
 	int nRet = 1;
 	uint8 b;
 	//if we have timed out waiting for a command, clear the command buffer and return.
-	if(command_buff.nCurReadPos > 0 && (getMs() - cmd_to) > 2000) 
+	if(usb_buff.nCurReadPos > 0 && (getMs() - cmd_to) > 2000) 
 	{
 		// clear command buffer if there was anything
-		init_command_buff(&command_buff);
-		return nRet;
+		init_command_buff(&usb_buff);
 	}	
 	//while we have something in either buffer,
-	while((usbComRxAvailable() || uart1RxAvailable()) && command_buff.nCurReadPos < USB_COMMAND_MAXLEN)
+	while(usbComRxAvailable() && usb_buff.nCurReadPos < USB_COMMAND_MAXLEN)
 	{
-	// if it is the USB, get the byte from it, otherwise get it from the UART.
-		if (usbComRxAvailable()) {
-			b = usbComRxReceiveByte();
-		}
-		else {
-			b = uart1RxReceiveByte();
-		}
-		//putchar(b);
+		cmd_to = getMs();
+		b = usbComRxReceiveByte();
 		if(send_debug)
 			printf_fast("%c",b);
-		command_buff.commandBuffer[command_buff.nCurReadPos] = b;
-		command_buff.nCurReadPos++;
-		//printf_fast("%x\r\n", command_buff.commandBuffer[0]);
-		// reset the command timeout.
-		cmd_to = getMs();
+		usb_buff.commandBuffer[usb_buff.nCurReadPos] = b;
+		usb_buff.nCurReadPos++;
 		// if it is the end for the byte string, we need to process the command
-		if( command_buff.nCurReadPos == command_buff.commandBuffer[0] || 
-			(command_buff.nCurReadPos == 1 && ((command_buff.commandBuffer[0] & 0x5F) == 0x53 )) || 
-			(command_buff.nCurReadPos == 1 && ((command_buff.commandBuffer[0] & 0x5F) == 0x44 )) || 
-			(command_buff.nCurReadPos == 1 && ((command_buff.commandBuffer[0] & 0x5F) == 0x42 )) || 
-			(command_buff.nCurReadPos == 1 && ((command_buff.commandBuffer[0] & 0x5F) == 0x4c )) || 
-			(command_buff.nCurReadPos == 1 && ((command_buff.commandBuffer[0] & 0x5F) == 0x50 )) || 
-			(command_buff.nCurReadPos == 2 && command_buff.commandBuffer[0] == 0x4F)
+		if( (usb_buff.nCurReadPos == 1 && ((usb_buff.commandBuffer[0] & 0x5F) == 0x53 )) || 
+			(usb_buff.nCurReadPos == 1 && ((usb_buff.commandBuffer[0] & 0x5F) == 0x44 )) || 
+			(usb_buff.nCurReadPos == 1 && ((usb_buff.commandBuffer[0] & 0x5F) == 0x42 )) || 
+			(usb_buff.nCurReadPos == 1 && ((usb_buff.commandBuffer[0] & 0x5F) == 0x4c )) || 
+			(usb_buff.nCurReadPos == 1 && ((usb_buff.commandBuffer[0] & 0x5F) == 0x50 ))
 			)
 		{
 			// ok we got the end of a command;
-			if(command_buff.nCurReadPos)
+			if(usb_buff.nCurReadPos)
 			{
 //				printf_fast("Processing Command\r\n");
 				// do the command
 				nRet = doCommand();
 				//re-initialise the command buffer for the next one.
-				init_command_buff(&command_buff);
+				init_command_buff(&usb_buff);
 				// break out if we got a breaking command
 				if(!nRet)
 					return nRet;
 			}
 		}
-		// otherwise, if the command is not up to the maximum length, add the character to the buffer.
 	}
+	while(uart1RxAvailable() && uart_buff.nCurReadPos < USB_COMMAND_MAXLEN)
+	{
+		b = uart1RxReceiveByte();
+		if(uart_buff.nCurReadPos == 0 && b == 0)
+			continue;
+		if(send_debug)
+			printf_fast("%c",b);
+		if(uart_buff.nCurReadPos == 0 && 
+			b > 127 &&
+			b != 0x4F && 
+			b != 0x02 &&
+			b != 0x06
+			)
+		{
+//			if(send_debug)
+//				printf_fast("%lu - bad character [%x] (%c), not appending to buffer\r\n", getMs(), b, b);
+			//init_command_buff(&uart_buff);
+			continue;
+		}
+		//putchar(b);
+		uart_to = getMs();
+		uart_buff.commandBuffer[uart_buff.nCurReadPos] = b;
+		uart_buff.nCurReadPos++;
+		if(uart_buff.nCurReadPos >=8 && 
+			(
+				strstr(uart_buff.commandBuffer, "www.jnhuamao.cn") || 
+				strstr(uart_buff.commandBuffer, "OK+Set:xBridge") ||
+				strstr(uart_buff.commandBuffer, "OK+Set:1") ||
+				strstr(uart_buff.commandBuffer, "OK+RESET")
+			)
+		)
+		{
+//			if(send_debug)
+//				printf_fast("%lu - string to ignore, clearing buffer of [%s]\r\n", getMs(), uart_buff.commandBuffer);
+			init_command_buff(&uart_buff);
+			return nRet;
+		}
+		//printf_fast("nCurReadPos is %u\r\n", uart_buff.nCurReadPos);
+		// reset the command timeout.
+		// if it is the end for the byte string, we need to process the command
+		//look for the strings we are interested in
+		if(uart_buff.nCurReadPos >=2 && strstr(uart_buff.commandBuffer, "OK") && ! got_ok)
+		{	
+			if(send_debug)
+				printf_fast("%lu - got OK\r\n", getMs());
+			got_ok = 1;
+		}
+		if(uart_buff.nCurReadPos >= 7 && uart_buff.nCurReadPos <= 9)
+		{
+			if(strstr(uart_buff.commandBuffer+2, "+CONN") && !ble_connected)
+			{
+				ble_connected = 1;
+				if(send_debug)
+					printf_fast("ble connected\r\n");
+//				if(send_debug)
+//					printf_fast("%lu - clearing buffer of [%s]\r\n", getMs(), uart_buff.commandBuffer);
+				init_command_buff(&uart_buff);
+				return nRet;
+			}
+			if (strstr(uart_buff.commandBuffer+2, "+LOST") && ble_connected) 
+			{
+				ble_connected = 0;
+				if(send_debug)
+					printf_fast("ble disconnected\r\n");
+//				if(send_debug)
+//					printf_fast("%lu - clearing buffer of [%s]\r\n", getMs(), uart_buff.commandBuffer);
+				init_command_buff(&uart_buff);
+				return nRet;
+			}
+		}
+		if((uart_buff.commandBuffer[0] == 0x02 || uart_buff.commandBuffer[0] == 0x06)
+			&& uart_buff.nCurReadPos 
+			&& uart_buff.nCurReadPos == uart_buff.commandBuffer[0])
+		{
+			uart_to = 0;
+			// do the command
+			nRet = doCommand();
+			//re-initialise the command buffer for the next one.
+			if(send_debug)
+				printf_fast("%lu - UART1 xBridge protocol done\r\n", getMs());
+			init_command_buff(&uart_buff);
+			// break out if we got a breaking command
+			return nRet;
+		}
+		if (uart_buff.nCurReadPos)
+			uart_receiving = 1;
+		else
+			uart_receiving = 0;
+	}	
 	return nRet;
 }
 
@@ -1670,7 +1758,7 @@ int doServices(uint8 bWithProtocol)
 	boardService();
 	updateLeds();
 	usbComService();
-	bleConnectMonitor();
+	//bleConnectMonitor();
 /*	if(initialised && ble_connected && !sent_beacon) {
 		sent_beacon = 1;
 		sendBeacon();
@@ -1709,10 +1797,12 @@ int WaitForPacket(uint32 milliseconds, Dexcom_packet* pkt, uint8 channel)
 	// a variable to use to convert the pkt-txId to something we can use.
 	uint8 txid = 0;
 	if(send_debug)
-		printf_fast("waiting for packet on channel %u for %lu \r\n", channel, milliseconds);
+		printf_fast("%lu - start is %lu, waiting for packet on channel %u for %lu \r\n", getMs(), start, channel, milliseconds);
 	// safety first, make sure the channel is valid, and return with error if not.
 	if(channel >= NUM_CHANNELS)
-		return -1;
+	{
+		return -3;
+	}
 	// set the channel parameters using swap_channel
 	swap_channel(nChannels[channel], fOffset[channel]);
 	// while we haven't reached the delay......
@@ -1821,7 +1911,8 @@ int get_packet(Dexcom_packet* pPkt)
 		// else, if we are on the start channel and we timed out, we are going to delay for 298 seconds (300 - 2 seconds for channels 1-3)
 		else if (timed_out && (nChannel == 0)) 
 		{
-			delay=298000;
+			delay=298500+10;
+			//delay=0;
 		}
 		// otherwise.....
 		else
@@ -1831,32 +1922,35 @@ int get_packet(Dexcom_packet* pPkt)
 				delay = 0;
 			}
 			// if we got a packet previously (pkt_time != 0), we calculate when we are expecting a packet.
+			// We then work out where to put the 500ms window between packets, by adding 250 to the delay result.
 			else if(getMs()<pkt_time) 
 			{
 				//the current time is less than the pkt_time, meaning our ms register has rolled over.
-				delay = (300000 - (wake_before_packet*1000)) - (4294967295 + getMs() - pkt_time);
+				printf_fast("%lu is less than pkt_time (%lu), getMs has rolled over.\r\n", getMs(), pkt_time);
+				delay = 300000 - (4294967295 + getMs() - pkt_time);
 			}
 			else
 			{
 				// the current time is greater than the last pkt_time, so we just do a basic calculation.
 				// 5 mins in ms + the wake_before_packet time - (current ms - last packet ms)
-				delay = (300000 - (wake_before_packet*1000)) - (getMs() - pkt_time);
+				printf_fast("%lu is greater than pkt_time (%lu), standard calc\r\n", getMs(), pkt_time);
+				delay = 300000 - (getMs() - pkt_time);
 			}
 			//if we have a delay number that doesn't equal 0, we need to subtract 500 * the channel we last captured on.
 			// ie, if we last captured on channel 0, subtract 0.  If on channel 1, subtract 500, etc
-			if(delay)
+			if(delay > 0)
 			{
 				delay -= (last_channel * 500);
 				if(crc_error) 
-					delay += 50;
-				if(send_debug)
-					printf_fast("%lu: last_channel is %u, delay is %lu\r\n", getMs(), last_channel, delay);
+					delay += 10;
 			}
 			// in case the figure we came up with is greater than 5 minutes, we deal with it here.  Probably never will run, i'm just like that.
 			while(delay > 300000)
 			{
 				delay -= 300000;
 			}
+			if(send_debug)
+				printf_fast("%lu: last_channel is %u, delay is %lu\r\n", getMs(), last_channel, delay);
 		}
 		switch(WaitForPacket(delay, pPkt, nChannel))
 		{
@@ -1872,17 +1966,30 @@ int get_packet(Dexcom_packet* pPkt)
 				//printf_fast("timed out\r");
 				//last_cycle_time=now;
 				timed_out = 1;
+				if(send_debug && nChannel == (NUM_CHANNELS - 1))
+					printf_fast("%lu - missed a packet\r\n", getMs());
 				continue;
 			case -1:
 			{
 			// cancelled by inbound data on USB (command), or channel invalid.
-				//printf_fast("leaving getPacket\r\n");
+				printf_fast("USB command, interrupted\r\n");
 				return 0;
 			}
 			case -2:
 			{
 				//got a bad CRC on the channel, so say so to let the delay calculation know to wait a little longer.
 				crc_error = 1;
+				continue;
+			}
+			case -3:
+			{
+				printf_fast("Invalid Channel\r\n");
+				continue;
+			}
+			default:
+			{
+				printf_fast("Unspecified Error from WaitForPacket\r\n");
+				continue;
 			}
 		}
 		//delay = 600;
@@ -1907,6 +2014,14 @@ void main()
 	uint8 i = 0;
 	uint16 rpt_pkt=0;
 	XDATA uint32 tmp_ms = 0;
+	// save port 0 Interrupt Enable state.  This is a BIT value and equates to IEN1.POIE.
+	// This is probably redundant now, as we do all IEN registers in goToSleep.
+	BIT savedP0IE;
+	uint8 savedPICTL;
+	uint8 savedP0SEL;
+	uint8 savedP0DIR;
+	uint8 savedP1SEL;
+	uint8 savedP1DIR;
 	systemInit();
 	//initialise the USB port
 	usbInit();
@@ -1933,7 +2048,6 @@ void main()
 	// turn Red LED on to let people know we have started and have power.
 	LED_RED(1);
 	//delay for 30 seconds to get putty up.
-//	waitDoingServices(10000,0,1);
 	waitDoingServices(10000,1);
 	LED_RED(0);
 	printf_fast("Starting xBridge v%s\r\nRetrieving Settings\r\n", VERSION);
@@ -1942,23 +2056,26 @@ void main()
 	
 	//turn on HM-1x using P1_0
 	setDigitalOutput(10,HIGH);
-	//if P1_2 goes high in 1s, it is xBridge
-	tmp_ms = getMs();
-	while (getMs() < tmp_ms + 1000) {	
-//		waitDoingServices(50,0,1);
-//		printf_fast("P1_2 is %u\r\n",P1_2);
-		if(P1_2) break;
-	}
-	if(!P1_2) {
-		setFlag(XBRIDGE_HW,0);
-	}
-	//wait 1 seconds, just in case it needs to settle.
-//	waitDoingServices(1000,0,0);
-	waitDoingServices(1000,0);
-	//initialise the command buffer
-	init_command_buff(&command_buff);
+	waitDoingServices(1000,1);
 	// Open the UART and set it up for comms to HM-10
 	openUart();
+	//init_command_buff(&usb_buff);
+	atBt();
+	//waitDoingServicesInterruptible(500,got_ok,1);
+	if(got_ok) {
+		got_ok =0;
+		setDigitalOutput(10,LOW);
+		atBt();
+		//waitDoingServicesInterruptible(500,got_ok,1);
+	}
+	if(got_ok) {
+		setFlag(XBRIDGE_HW,0);
+	}
+	setDigitalOutput(10,HIGH);
+	//wait 1 seconds, just in case it needs to settle.
+	waitDoingServices(1000,0);
+	//initialise the command buffers
+	// Open the UART and set it up for comms to HM-10
 	//configure the bluetooth module
 	//if we haven't written a 0 into the appropriate flag...
 	if(getFlag(BLE_INITIALISED)) { 
@@ -2013,11 +2130,11 @@ void main()
 			printf_fast("No dex_tx_id.  Sending beacon.\r\n");
 		// wait until we have a BLE connection
 		while(!ble_connected) doServices(1);
+		waitDoingServices(500,1);
 		//send a beacon packet
 		sendBeacon();
-		doServices(0);
+		doServices(1);
 		//wait 5 seconds
-//		waitDoingServices(10000, dex_tx_id_set, 1);
 		waitDoingServicesInterruptible(10000, dex_tx_id_set, 1);
 	}
 	// if we still have settings to save (no TXID set), save them
@@ -2057,12 +2174,11 @@ void main()
 		// get the most recent battery capacity
 		battery_capacity = batteryPercent(adcRead(0 | ADC_REFERENCE_INTERNAL));
 		while (!do_sleep){
+			if(send_debug)
+				printf_fast("%lu - packet waiting\r\n", getMs());
+			setDigitalOutput(10,HIGH);
 			while(!ble_connected && (getMs() - pkt_time)<120000) {
-				if(send_debug)
-					printf_fast("%lu - packet waiting\r\n", getMs());
-				setDigitalOutput(10,HIGH);
-//				waitDoingServices(1000, ble_connected,0);
-				waitDoingServicesInterruptible(1000, ble_connected,0);
+				waitDoingServicesInterruptible(1000, ble_connected,1);
 			}
 			if(ble_connected) {
 				//printf_fast("%lu - ble_connected: %u, sent_beacon: %u\r\n", getMs(), ble_connected, sent_beacon);
@@ -2082,9 +2198,10 @@ void main()
 			if(send_debug)
 				printf_fast("%lu - waiting for ack\r\n", getMs());
 			waitDoingServicesInterruptible(10000, do_sleep, 1);						
-			// if we have sent a number of packets and still have not got an ACK, time to sleep.  We keep trying for up to 3 minutes.
+			// if we have sent a number of packets and still have not got an ACK, time to sleep.  We keep trying for up to 2 minutes.
 			if((getMs() - pkt_time) >= 120000) {
 				//sendBeacon();
+				printf_fast("%lu - No ACK received\r\n", getMs());
 				sent_beacon = 0;
 				do_sleep = 1;
 			}
@@ -2093,27 +2210,6 @@ void main()
 		// can't safely sleep if we didn't get an ACK, or if we are already sleeping!
 		if (do_sleep && !is_sleeping)
 		{
-			// save all Port Interrupts state (enabled/disabled).
-		    uint8 savedPICTL = PICTL;
-			// save port 0 Interrupt Enable state.  This is a BIT value and equates to IEN1.POIE.
-			// This is probably redundant now, as we do all IEN registers in goToSleep.
-			BIT savedP0IE = P0IE;
-			uint8 savedP0SEL = P0SEL;
-			uint8 savedP0DIR = P0DIR;
-			uint8 savedP1SEL = P1SEL;
-			uint8 savedP1DIR = P1DIR;
-			P1SEL = 0x00;
-			P1DIR =0xff;
-			//printf_fast("%lu - going to sleep\r\n", getMs());
-			// clear sent_beacon so we send it next time we wake up.
-			sent_beacon = 0;
-			// turn of the RF Frequency Synthesiser.
-			RFST = 4;   //SIDLE
-			// turn all wixel LEDs on
-			//LED_RED(1);
-			//LED_YELLOW(1);
-			//LED_GREEN(1);
-			// wait 500 ms, processing services.
 			dly_ms=getMs();
 			while((getMs() - dly_ms) <= 500) {
 				// allow the wixel to complete any other tasks.
@@ -2124,22 +2220,53 @@ void main()
 			}
 			// make sure the uart send buffer is empty.
 			while(uart1TxAvailable() < 255);
-			// turn the wixel LEDS off
-			LED_RED(0);
-			LED_YELLOW(0);
-			LED_GREEN(0);
 			// turn off the BLE module
 			if(sleep_ble){
-				if(send_debug) {
-					printf_fast("turning off BLE\r\n");
+				ble_dly_ms = getMs();
+				while(ble_connected && ((getMs() - ble_dly_ms) <= 10500 )) 
+				{
+					//waitDoingServicesInterruptible(2000,(!ble_connected),1);
+					if(send_debug)
+						printf_fast("%lu - ble_connected = %d, P1_2 = %d\r\n", getMs(), ble_connected, P1_2);
+					if(breakBt())
+					{
+						if(send_debug)
+							printf_fast("broke connection\r\n");
+						break;
 					}
+					else
+						if(send_debug)
+							printf_fast("connection did not break, P1_2 is %d\r\n", P1_2);
+				}
+				printf_fast("turning off BLE\r\n");
 				setDigitalOutput(10,LOW);
 				ble_connected = 0;
 			}
+		    savedPICTL = PICTL;
+			// save port 0 Interrupt Enable state.  This is a BIT value and equates to IEN1.POIE.
+			// This is probably redundant now, as we do all IEN registers in goToSleep.
+			savedP0IE = P0IE;
+			savedP0SEL = P0SEL;
+			savedP0DIR = P0DIR;
+			savedP1SEL = P1SEL;
+			savedP1DIR = P1DIR;
+			// save all Port Interrupts state (enabled/disabled).
+			P1SEL = 0x00;
+			P1DIR =0xff;
+			//printf_fast("%lu - going to sleep\r\n", getMs());
+			// clear sent_beacon so we send it next time we wake up.
+			sent_beacon = 0;
+			// turn of the RF Frequency Synthesiser.
+			RFST = 4;   //SIDLE
+			// wait 500 ms, processing services.
 			// sleep for around 300s
 			if(send_debug)
 				printf_fast("%lu - sleeping for %u\r\n", getMs(), 300-wake_before_packet);
 			radioMacSleep();
+			// turn the wixel LEDS off
+			LED_RED(0);
+			LED_YELLOW(0);
+			LED_GREEN(0);
 			goToSleep(300-wake_before_packet);   //
 			got_packet = 0;
 			radioMacResume();
@@ -2164,7 +2291,8 @@ void main()
 			if(send_debug)
 				printf_fast("%lu - awake!\r\n", getMs());
 			//printf_fast("%lu - battery_capacity: %u\r\n", battery_capacity);
-			init_command_buff(&command_buff);
+			init_command_buff(&usb_buff);
+			init_command_buff(&uart_buff);
 			// tell the radio to remain IDLE when the next packet is recieved.
 			MCSM1 = 0;			// after RX go to idle, we don't transmit
 			// watchdog mode??? this will do a reset?

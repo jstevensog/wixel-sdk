@@ -16,7 +16,7 @@ It could likely also be modified to work with any CGM transmitter.
 == Description ==
 A program to allow a wixel to capture packets from a Dexcom G4 Platinum 
 Continuous Glucose Monitor transmitter and send them in binary form
-out of the UUSB port if it is connected.
+out of the UART1 port, and USB port if it is connected.
 
 It also accepts various protocol packets on the USB port, one of
 which allows you to see or set the Dexcom Transmitter ID in the form of an encoded
@@ -77,7 +77,6 @@ Note:  The protocol can be expanded simply by adding other packet types.
 #include <radio_registers.h>
 #include <radio_mac.h>
 #include <random.h>
-//#include <radio_queue.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -85,7 +84,7 @@ Note:  The protocol can be expanded simply by adding other packet types.
 #include <uart1.h>
 
 //define the xBridge Version
-#define VERSION ("0.1")
+#define VERSION ("0.2")
 //define the maximum command string length for USB commands.
 #define USB_COMMAND_MAXLEN	(32)
 //defines the number of channels we will scan.
@@ -409,7 +408,7 @@ PDATA volatile uint32 timeMs;
 ISR(T4, 0)
 {
     timeMs++;
-    // T4CC0 ^= 1; // If we do this, then on average the interrupts will occur precisely 1.000 ms apart.
+	T4CC0 ^= 1; // If we do this, then on average the interrupts will occur precisely 1.000 ms apart.
 }
 
 uint32 getMs()
@@ -436,6 +435,7 @@ void addMs(uint32 addendum)
 
 void timeInit()
 {
+	// set the timer tick interval
     T4CC0 = 187;
     T4IE = 1;     // Enable Timer 4 interrupt.  (IEN1.T4IE=1)
 
@@ -468,8 +468,6 @@ void delayMs(uint16 milliseconds)
 // store RF config in FLASH, and retrieve it from here to put it in proper location (also incidentally in flash).
 // this allows persistent storage of RF params that will survive a restart of the wixel (although not a reload of wixel app obviously).
 // TO-DO get this working with DMA - need to erase memory block first, then write this to it.
-//uint8 XDATA RF_Params[50];
-
 
 void LoadRFParam(unsigned char XDATA* addr, uint8 default_val)
 {
@@ -477,6 +475,9 @@ void LoadRFParam(unsigned char XDATA* addr, uint8 default_val)
 }
 
 
+/*
+** Radio Settings Function - Initialises the CC2511 radio for Dexcom G4 transmitter signal reception.
+*/
 void dex_RadioSettings()
 {
     // Transmit power: one of the highest settings, but not the highest.
@@ -580,12 +581,16 @@ void dex_RadioSettings()
 }
 
 
+/* 
+** Dexcom Transmitter ID functions
+*/
+
+// Utility function to compare and return the minimum of two 8 bit values
 uint8 min8(uint8 a, uint8 b)
 {
 	if(a < b) return a;
 	return b;
 }
-
 
 //format an array to decode the dexcom transmitter name from a Dexcom packet source address.
 XDATA char SrcNameTable[32] = { '0', '1', '2', '3', '4', '5', '6', '7',
@@ -607,49 +612,68 @@ char *dexcom_src_to_ascii(uint32 src)
 	return (char *)addr;
 }
 
+/*
+** End of Dexcom Transmitter ID functions
+*/
 
+// Utility function to enable the UART
 void uartEnable() {
     U1UCR &= ~0x40; //Hardware Flow Control (CTS/RTS) Off.  We always want it off.
     U1CSR |= 0x40; // Recevier enable
 }
 
-// function to wait a specified number of milliseconds, whilst processing services.
-void waitDoingServices (uint32 wait_time, volatile BIT break_flag, BIT bProtocolServices ) {
-	XDATA uint32 start_wait;
-	start_wait = getMs();
-	while ((getMs() - start_wait) < wait_time) {
-		doServices(bProtocolServices);
-		if(break_flag) return;
-		delayMs(20);
-	}
-}
+// Macros for waitDoingServices calls.
+#define waitDoingServicesInterruptible(wait_time, break_flag, bProtocolServices) \
+  do { \
+	XDATA uint32 start_wait; \
+	start_wait = getMs(); \
+	while ((getMs() - start_wait) < wait_time) { \
+		doServices(bProtocolServices); \
+		if(break_flag) break; \
+		delayMs(20); \
+	} \
+  } while (0)
+
+// macro to wait a specified number of milliseconds, whilst processing services.
+#define waitDoingServices(wait_time, bProtocolServices) \
+  do { \
+	XDATA uint32 start_wait; \
+	start_wait = getMs(); \
+	while ((getMs() - start_wait) < wait_time) { \
+		doServices(bProtocolServices); \
+		delayMs(20); \
+	} \
+  } while (0)
 
 
-/** Functions *****************************************************************/
-/* the functions that puts the system to sleep (PM2) and configures sleep timer to
-wake it again in 250 seconds.*/
+
+/*
+** Sleep Functions ****************************************************************
+*/
+/* the functions that puts the system to sleep (PM1 / PM2) and configures sleep timer to
+wake it again.*/
+// function to make all CC2511 outputs low before going to sleep.
 void makeAllOutputs(BIT value)
 {
 	//we only make the P1_ports low, and not P1_2 or P1_3
     int i;
-    for (i=10;i < 17; i++)
+    for (i=10;i <= 17; i++)
 	{
-		if( i == 10 )
-			continue;
 		setDigitalOutput(i, value);
     }
 }
 
+//function to initialise the Event0 interrupt, to wake the CC2511 at the prescribed time
 void sleepInit(void)
 {
    WORIRQ  |= (1<<4); // Enable Event0 interrupt  
 }
 
+//ISR function that is called when the Sleep Timer expires.
 ISR(ST, 1)
 {
    // Clear IRCON.STIF (Sleep Timer CPU interrupt flag)
-   //IRCON &= 0x7F;
-   IRCON &= 0x3F;
+   IRCON &= 0x7F;
    // Clear WORIRQ.EVENT0_FLAG (Sleep Timer peripheral interrupt flag)
    // This is required for the CC111xFx/CC251xFx only!
    WORIRQ &= 0xFE;
@@ -657,6 +681,7 @@ ISR(ST, 1)
    SLEEP &= 0xFC; // Not required when resuming from PM0; Clear SLEEP.MODE[1:0]
 }
 
+// function to switch to the RCOSC prior to goint to sleep.
 void switchToRCOSC(void)
 {
    // Power up [HS RCOSC] (SLEEP.OSC_PD = 0)
@@ -672,46 +697,95 @@ void switchToRCOSC(void)
    SLEEP |= 0x04;
 }
 
+//function to switch to HSXOSC when we wake.
+void switchToHSXOSC(void)
+{
+	// Power up [HS XOSC] (SLEEP.OSC_PD = 0)
+	SLEEP &= ~0x04;
+	// Wait until [HS XOSC] is stable (SLEEP.XOSC_STB = 1)
+	while ( ! (SLEEP & 0x40) );
+	// Switch system clock source to [HS XOSC] (CLKCON.OSC = 0)
+	CLKCON &= ~0x40;
+	// Wait until system clock source has actually changed (CLKCON.OSC = 0)
+	while ( CLKCON & 0x40 );
+	// Power down [HS RCOSC] (SLEEP.OSC_PD = 1)
+	SLEEP |= 0x04;
+}
 
+// Calculate the time we need to sleep in order to wake up in time to get a packet.
 uint32 calcSleep(uint16 seconds) {
 	uint32 diff = 0;
-	XDATA uint32 now = 0;
+	//XDATA uint32 now = 0;
+	XDATA uint32 less = 0;
 	diff = seconds;
 //	printf_fast("\r\ndiff: %lu\r\n", diff);
-	diff = diff * 1000;
-	now = diff;
+	diff = (diff * 1000) - (last_channel * 500);
+	//now = diff;
 	//printf_fast("\r\ndiff * 1000: %lu\r\n", diff);
-	diff = diff - (getMs() - pkt_time);
+	less = getMs() - pkt_time;
+//	if ( less > 300000 )
+		//less -= 4294967295;
+	while( less > 300000 )
+		less -= 300000;
+	diff = diff - less;
 //	printf_fast("\r\ndiff - getMs-pkt_time: %lu\r\n", diff);
 //	diff = diff/1000;
 //	while(diff>seconds)
 //		diff-= 300;
-	while(diff > now)
-		diff = diff - now;
+/*	while(diff > now)
+		diff = diff - now; */
 //	printf_fast("\r\ndiff: %lu\r\n", diff);
 	return diff;
 }
 
+// function to put the CC2511 to sleep, in the appropriate PM, for the specified number of seconds.
 void goToSleep (uint16 seconds) {
     unsigned char temp;
 	//uint16 sleep_time = 0;
 	unsigned short sleep_time = 0;
+	unsigned short this_sleep_time = 10000;
 	uint32 sleep_time_ms = 0;
-	XDATA uint32 addendum = 0;
-	//uint32 diff = 0;
-	//uint32 now = 0;
+	uint32 seconds_ms = seconds;
+	seconds_ms *= 1000;
 	//initialise sleep library
 	sleepInit();
 
     // The wixel docs note that any high output pins consume ~30uA
     makeAllOutputs(LOW);
-	//printf_fast("\r\nseconds: %u, sleep_time: %u, now-pkt_time: %lu\r\n", seconds, sleep_time, (getMs()-pkt_time));
-	//sleep_time_ms = calcSleep(seconds);
+	is_sleeping = 1;
+	//calculate the time we will sleep in total.
+	sleep_time_ms = calcSleep(seconds);
+	sleep_time = (unsigned short)(sleep_time_ms/1000);
+	// we wake up every 10 seconds to recalibrate the RCOSC.  
+	//The first time may be less than 10 seconds, in case we calculate value that is not wholey divisible by 10.
+	//while(sleep_time > 0)
+	while(sleep_time_ms >0 )
+	{
+		if( sleep_time_ms % 10000 == 0)
+		{
+			this_sleep_time = 10000;
+		}
+		else
+		{
+			this_sleep_time = sleep_time_ms % 10000;
+		}
+		sleep_time_ms -= this_sleep_time;
+		if(send_debug)
+			printf_fast("%lu - sleep_time_ms is %lu, this_sleep_time is %u\r\n", getMs(), sleep_time_ms, this_sleep_time);
+		if (this_sleep_time < 5000 || this_sleep_time > 10000) {
+			if(send_debug)
+				printf_fast("this_sleep_time is %u, so skipping this iteration.\r\n", this_sleep_time);
+			continue;
+		}
+		if (sleep_time_ms > seconds_ms) {
+			//printf_fast(" sleep_time too short.  Not sleeping.");
+			if(send_debug)
+				printf_fast("sleep_time_ms (%lu) is greater than seconds_ms (%lu).\r\n", sleep_time_ms, seconds_ms);
+			return;
+		}
 	while(usb_connected && (usbComTxAvailable() < 128)) {
 		usbComService();
 	}
-	is_sleeping = 1;
-
 	if(!usb_connected)
 	{
 		unsigned char storedDescHigh, storedDescLow;
@@ -722,12 +796,8 @@ void goToSleep (uint16 seconds) {
 		// disable the USB module
 		SLEEP &= ~(1<<7); // Disable the USB module (SLEEP.USB_EN = 0).
 		// sleep power mode 2 is incompatible with USB - as USB registers lose state in this mode.
-
-   
-		//desired_event0 = seconds;
-		
-		// set Sleep Timer to the lowest resolution (1 second)      
-		WORCTRL |= 0x03; 
+			// set Sleep Timer to the ms resolution      
+			WORCTRL |= 0x01;
 		// must be using RC OSC before going to PM2
 		switchToRCOSC();
 		
@@ -764,25 +834,15 @@ void goToSleep (uint16 seconds) {
 		IEN1 &= ~0x3F;
 		IEN2 &= ~0x3F;
 		
-		sleep_time_ms = calcSleep(seconds);
-		sleep_time = (unsigned short)(sleep_time_ms/1000);
-		//printf_fast("sleep_time: %u\r\n", sleep_time);
-		//pkt_time += sleep_time_ms;
-		if (sleep_time == 0 || sleep_time > seconds) {
-			LED_YELLOW(1);
-			// Switch back to high speed
-			boardClockInit();   
-			return;
-		}
 		WORCTRL |= 0x04; // Reset Sleep Timer, set resolution to 1 clock cycle
 		temp = WORTIME0;
 		while(temp == WORTIME0); // Wait until a positive 32 kHz edge
 		temp = WORTIME0;
 		while(temp == WORTIME0); // Wait until a positive 32 kHz edge
-		WOREVT1 = sleep_time >> 8; // Set EVENT0, high byte
-		WOREVT0 = sleep_time; // Set EVENT0, low byte
+			WOREVT1 = this_sleep_time >> 8; // Set EVENT0, high byte
+			WOREVT0 = this_sleep_time; // Set EVENT0, low byte
 		MEMCTR |= 0x02;  // Flash cache must be disabled.
-		SLEEP = 0x06; // PM2, disable USB, power down other oscillators
+			SLEEP = (SLEEP & 0xFC) | 0x06; // PM2, disable USB, power down other oscillators
 		
 		__asm nop __endasm; 
 		__asm nop __endasm; 
@@ -805,13 +865,11 @@ void goToSleep (uint16 seconds) {
 			DMAARM |= 0x01; // Set DMA0ARM
    
 		// Switch back to high speed
-		boardClockInit();   
-		// add the time we were asleep to ms count
-		addMs(sleep_time_ms);
+			switchToHSXOSC();
 
 	} else {
-		// set Sleep Timer to the lowest resolution (1 second)      
-		WORCTRL |= 0x03; // WOR_RES[1:0]
+			// set Sleep Timer to the ms resolution      
+			WORCTRL |= 0x01;
 		// make sure interrupts aren't completely disabled
 		// and enable sleep timer interrupt
 		IEN0 |= 0xA0; // Set EA and STIE bits
@@ -822,18 +880,8 @@ void goToSleep (uint16 seconds) {
 		temp = WORTIME0;
 		while(temp == WORTIME0); // Wait until a positive 32 kHz edge
 
-		sleep_time_ms = calcSleep(seconds);
-		sleep_time = (unsigned short)(sleep_time_ms/1000);
-		//printf_fast("sleep_time_ms: %lu, sleep_time: %u\r\n", sleep_time_ms, sleep_time);
-		//pkt_time += sleep_time_ms;
-		if (sleep_time == 0 || sleep_time > seconds) {
-			LED_YELLOW(1);
-			// Switch back to high speed
-			boardClockInit();   
-			return;
-		}
-		WOREVT1 = sleep_time >> 8; // Set EVENT0, high byte
-		WOREVT0 = sleep_time; // Set EVENT0, low byte
+			WOREVT1 = this_sleep_time >> 8; // Set EVENT0, high byte
+			WOREVT0 = this_sleep_time; // Set EVENT0, low byte
 
 		// Set SLEEP.MODE according to PM1
 
@@ -854,7 +902,7 @@ void goToSleep (uint16 seconds) {
 		// interrupts are effectively blocked when reaching this code position.
 		// If the SLEEP.MODE bits have been cleared at this point, which means
 		// that an ISR has indeed executed in between the above NOPs, then the
-		// application will not enter PM{1 – 3} !
+			// application will not enter PM{1 - 3} !
    
 		if (SLEEP & 0x03) // SLEEP.MODE[1:0]
 		{
@@ -864,13 +912,23 @@ void goToSleep (uint16 seconds) {
 			// or external Port interrupt.
 			__asm nop __endasm;    
 		}
-		addMs(sleep_time_ms);
+			// Switch back to high speed      
+			//boardClockInit();
+			switchToHSXOSC();
 	}
-//	printf_fast("awake!  getMs is %lu\r\n", getMs());
-//	printf_fast("slept for %lu us, %u s \r\n", sleep_time_ms, sleep_time);
+		//addMs(this_sleep_time * 1000);
+		addMs(this_sleep_time);
+	}
+	//addMs(sleep_time_ms);
+	boardClockInit();
 	is_sleeping = 0;
 }
 
+/*
+** End of Sleep Functions **
+*/
+
+// utility function to update the leds.  Called in doServices()
 void updateLeds()
 {
 	if (do_sleep)
@@ -949,7 +1007,7 @@ void send_data( uint8 *msg, uint8 len)
 	{
 		uart1TxSendByte(msg[i]);
 	}
-	while(uart1TxAvailable()<255) waitDoingServices(20,0,1);
+	while(uart1TxAvailable()<255) waitDoingServices(20,1);
 	if(usb_connected) {
 		if(send_debug)
 			printf_fast("Sending: ");
@@ -958,7 +1016,7 @@ void send_data( uint8 *msg, uint8 len)
 		{
 			usbComTxSendByte(msg[i]);
 		}
-		while(usbComTxAvailable()<128) waitDoingServices(20,0,1);
+		while(usbComTxAvailable()<128) waitDoingServices(20,1);
 		if(send_debug)
 			printf_fast("\r\nResponse: ");
 	}
@@ -1364,7 +1422,7 @@ void main()
 	//initialise Anlogue Input 0
 	P0INP = 0x1;
 	//wait 1 seconds, just in case it needs to settle.
-	waitDoingServices(1000,0,0);
+	waitDoingServices(1000,0);
 	//initialise the command buffer
 	init_command_buff(&command_buff);
 	// we haven't sent a beacon packet yet, so say so.
@@ -1395,7 +1453,7 @@ void main()
 			// send the data packet
 			print_packet(&Pkt);
 			// wait 10 seconds, listenting for the ACK.
-			waitDoingServices(10000, 0, 1);
+			waitDoingServices(10000, 1);
 			
 			// if we got the ACK, get out of the loop.
 			// if we have sent a number of packets and still have not got an ACK, time to sleep.  We keep trying for up to 3 minutes.
@@ -1474,7 +1532,7 @@ void main()
 			channel=0;
 			// clear do_sleep, cause we have just woken up.
 			do_sleep = 0;
-			waitDoingServices(250,0,1);
+			waitDoingServices(250,1);
 		}
 		else {
 			do_sleep = 0;

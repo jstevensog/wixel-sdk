@@ -262,7 +262,8 @@ uint8 init_command_buff(t_command_buff* pCmd);
 
 
 // frequency offsets for each channel - seed to 0.
-static uint8 fOffset[NUM_CHANNELS] = {0xCE,0xD5,0xE6,0xE5};
+static const int8 fOffsetDefaults[NUM_CHANNELS] = {0xCE,0xD5,0xE6,0xE5};
+static int8 fOffset[NUM_CHANNELS] = {0xCE,0xD5,0xE6,0xE5};
 static uint8 nChannels[NUM_CHANNELS] = { 0, 100, 199, 209 };
 
 
@@ -1822,11 +1823,14 @@ int WaitForPacket(uint32 milliseconds, Dexcom_packet* pkt, uint8 channel)
 				// there's a packet!
 				// Add the Frequency Offset Estimate from the FREQEST register to the channel offset.
 				// This helps keep the receiver on track for any drift in the transmitter.
-				if((uint16)(FREQEST + fOffset[channel]) < 0xFF) {
+				if((0xff - fOffset[channel]) > FREQEST) {
 					if(send_debug)
-						printf_fast("&l - applying frequency offset of %i to fOffset[%u] of %i\r\n", getMs(), FREQEST, channel, fOffset[channel]); 
+						printf_fast("%lu - applying FREQEST of %d to fOffset[%u] of %d\r\n", getMs(), FREQEST, channel, fOffset[channel]); 
 					fOffset[channel] += FREQEST;
-				}
+				} else if (send_debug)
+					printf_fast("%lu - FREQEST of %d is to large to add to fOffset[%u] of %d\r\n", getMs(), FREQEST, channel, fOffset[channel]);
+				if(send_debug)
+					printf_fast("%lu - fOffset[%u] is now %d\r\n", getMs(), channel, fOffset[channel]);
 				// fetch the packet.
 				// length +2 because we append RSSI and LQI to packet buffer, which isn't shown in len
 				memcpy(pkt, packet, min8(len+2, sizeof(Dexcom_packet))); 
@@ -1967,11 +1971,10 @@ int get_packet(Dexcom_packet* pPkt)
 					return 1;
 			case 0:
 				// timed out
-				//printf_fast("timed out\r");
-				//last_cycle_time=now;
 				timed_out = 1;
 				if(send_debug && nChannel == (NUM_CHANNELS - 1))
-					printf_fast("%lu - missed a packet\r\n", getMs());
+					printf_fast("%lu - missed a packet, resetting channel offset to default\r\n", getMs());
+				fOffset[nChannel] = fOffsetDefaults[nChannel];
 				continue;
 			case -1:
 			{

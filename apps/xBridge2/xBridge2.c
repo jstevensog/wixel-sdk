@@ -262,8 +262,12 @@ uint8 init_command_buff(t_command_buff* pCmd);
 
 
 // frequency offsets for each channel - seed to 0.
+/*
 static const int8 fOffsetDefaults[NUM_CHANNELS] = {0xCE,0xD5,0xE6,0xE5};
 static int8 fOffset[NUM_CHANNELS] = {0xCE,0xD5,0xE6,0xE5};
+*/
+static const int8 fOffsetDefaults[NUM_CHANNELS] = {0xF2,0xF9,0x0A,0x0B};
+static int8 fOffset[NUM_CHANNELS] = {0xF2,0xF9,0x0A,0x0B};
 static uint8 nChannels[NUM_CHANNELS] = { 0, 100, 199, 209 };
 
 
@@ -687,16 +691,25 @@ void dex_RadioSettings()
     // Transmit power: one of the highest settings, but not the highest.
     LoadRFParam(&PA_TABLE0, 0x00);
 
+	// NOTE from jstevensog:  The following calculations make no sense.  I have tried these, and the channels do not work.
     // Set the center frequency of channel 0 to 2403.47 MHz.
     // Freq = 24/2^16*(0xFREQ) = 2403.47 MHz
     // FREQ[23:0] = 2^16*(fCarrier/fRef) = 2^16*(2400.156/24) = 0x6401AA
+	
+	//jstevensog:
+	// Reversing the above equations, 
     //IOCFG2 = 0x0E; //RX_SYMBOL_TICK
     //IOCFG1 = 0x16; //RX_HARD_DATA[1]
     //IOCFG0 = 0x1D; //Preamble Quality Reached
     LoadRFParam(&IOCFG0, 0x0E);
+	/*
     LoadRFParam(&FREQ2, 0x65);
     LoadRFParam(&FREQ1, 0x0A);
     LoadRFParam(&FREQ0, 0xAA);
+	*/
+    LoadRFParam(&FREQ2, 0x65);
+    LoadRFParam(&FREQ1, 0x0A);
+    LoadRFParam(&FREQ0, 0x48);
     LoadRFParam(&SYNC1, 0xD3);
     LoadRFParam(&SYNC0, 0x91);
     LoadRFParam(&ADDR, 0x00);

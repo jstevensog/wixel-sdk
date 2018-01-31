@@ -192,7 +192,7 @@ endif
 	$(V)$(GREP) param $(<:%.hex=%.cdb) >> $@.tmp || echo "(This app has no params.)"
 	$(V)$(ECHO) ====== hex>> $@.tmp
 	$(V)$(PACKIHX) $< >> $@.tmp
-	$(V)$(SED) -f libraries/dos_newlines.sed $@.tmp > $@
+	$(V)$(SED) -e "s/\r//g" $@.tmp > $@
 	$(V)$(RM) $@.tmp
 
 # Include all the dependency files generated during compilation so that Make

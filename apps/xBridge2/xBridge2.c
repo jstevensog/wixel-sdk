@@ -90,7 +90,7 @@ elsewhere.  This small bridge rig should be kept nearby the T1D at all times.
 #include <uart1.h>
 
 //define the xBridge Version
-#define VERSION ("2.47f")
+#define VERSION ("2.47e")
 //define the FLASH_TX_ID address.  This is the address we store the Dexcom TX ID number in.
 //#define FLASH_TX_ID		(0x77F8)
 //define the DEXBRIDGE_FLAGS address.  This is the address we store the xBridge flags in.
@@ -1822,11 +1822,7 @@ int WaitForPacket(uint32 milliseconds, Dexcom_packet* pkt, uint8 channel)
 				// there's a packet!
 				// Add the Frequency Offset Estimate from the FREQEST register to the channel offset.
 				// This helps keep the receiver on track for any drift in the transmitter.
-				if((uint16)(FREQEST + fOffset[channel]) < 0xFF) {
-					if(send_debug)
-						printf_fast("&l - applying frequency offset of %i to fOffset[%u] of %i\r\n", getMs(), FREQEST, channel, fOffset[channel]); 
-					fOffset[channel] += FREQEST;
-				}
+				fOffset[channel] += FREQEST;
 				// fetch the packet.
 				// length +2 because we append RSSI and LQI to packet buffer, which isn't shown in len
 				memcpy(pkt, packet, min8(len+2, sizeof(Dexcom_packet))); 

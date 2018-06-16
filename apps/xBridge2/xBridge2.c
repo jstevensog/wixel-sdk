@@ -1440,6 +1440,8 @@ void print_packet(Dexcom_packet* pPkt)
 	msg.size = sizeof(msg);
 	msg.delay = getMs() - pPkt->ms;
 	msg.function = DEXBRIDGE_PROTO_LEVEL; // basic functionality, data packet (with ack), TXID packet, beacon packet (also TXID ack).
+	if (send_debug)
+		printf_fast("%lu: sending data packet with a delay of %lu\r\n", getMs(), getMs() - pPkt->ms);
 	send_data( (uint8 XDATA *)msg, msg.size);
 }
 
@@ -1982,6 +1984,7 @@ int get_packet(Dexcom_packet* pPkt)
 			case 1:			
 				// got a packet that passed CRC
 					pkt_time = getMs();
+					pPkt->ms = pkt_time;
 					timed_out = 0;
 					if(send_debug)
 						printf_fast("got a packet at %lu on channel %u\r\n", pkt_time, last_channel);
@@ -2220,7 +2223,8 @@ void main()
 				waitDoingServicesInterruptible(2000, got_ack, 1);
 				if (got_ack) 
 				{
-					if (send_debug)	printf_fast("%lu got ack for read position %d while write is %d, incrementing read\r\n", getMs(), Pkts.read, Pkts.write);
+					if (send_debug)	
+						printf_fast("%lu got ack for read position %d while write is %d, incrementing read\r\n", getMs(), Pkts.read, Pkts.write);
 					Pkts.read = (Pkts.read + 1) & (DXQUEUESIZE); //increment read position since we got an ack for the last package
 				}
 			}

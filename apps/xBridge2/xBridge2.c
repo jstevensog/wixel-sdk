@@ -2217,7 +2217,7 @@ void main()
 			// we got a connection, so send pending packets now - at most for two minutes after the last packet was received
 			while ((Pkts.read != Pkts.write) && ble_connected && ((getMs() - pkt_time) < 120000)) 
 			{
-				if(send_debug) printf_fast("%lu sending packet\r\n", getMs());
+				if(send_debug) printf_fast("%lu sending packet from position %d\r\n", getMs(), Pkts.read);
 				got_ack = 0;
 				print_packet(&Pkts.buffer[Pkts.read]);
 				waitDoingServicesInterruptible(2000, got_ack, 1);

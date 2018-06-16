@@ -186,7 +186,7 @@ XDATA Dexcom_packet * Pkt;
 typedef struct {
 	volatile uint8 read;
 	volatile uint8 write;
-	Dexcom_packet buffer[DXQUEUESIZE];
+	Dexcom_packet buffer[DXQUEUESIZE+1];
 } Dexcom_fifo;
 
 XDATA Dexcom_fifo Pkts;
@@ -2221,7 +2221,7 @@ void main()
 				if (got_ack) 
 				{
 					if (send_debug)	printf_fast("%lu got ack for read position %d while write is %d, incrementing read\r\n", getMs(), Pkts.read, Pkts.write);
-					Pkts.read = (Pkts.read + 1) & (DXQUEUESIZE-1); //increment read position since we got an ack for the last package
+					Pkts.read = (Pkts.read + 1) & (DXQUEUESIZE); //increment read position since we got an ack for the last package
 				}
 			}
 		}

@@ -178,6 +178,47 @@ XDATA Dexcom_packet * Pkt;
 
 XDATA uint8 currentPacket[sizeof(Dexcom_packet)];
 
+// Packet cache structs
+typedef struct _Packet
+{
+	uint32 	src_addr;
+	uint8	txId;
+	uint16	raw;
+	uint16	filtered;
+	uint16	battery;
+	uint32	ms;
+} Packet;
+
+typedef struct _Packet_cache
+{
+	uint8	head;
+	uint8	tail;
+	Packet	packet[64];
+} Packet_cache;
+
+XDATA Packet_cache packet_cache;
+//Packet cahce functions
+//
+//push_cache - pushes a packet onto the cache
+void push_cache(Dexcom_packet * pPkt)
+{
+	packet_cache->packet->src_addr = pPkt->src_addr;
+	packet_cache->packet->txId = pPkt->src_addr;
+	packet_cache->packet->raw = pPkt->raw;
+	packet_cache->packet->filtered = pPkt->filtered;
+	packet_cache->packet->ms = getms();
+	if(packet_cache->head < 63)
+		packet_cache->head ++;
+	else
+		packet_cache->head = 0;
+}
+//pop_cache - takes the oldest packet off the cache.  Returns null if no packet to fetch
+Packet pop_cache();
+{
+}
+//step_cache - steps the cache to the next oldets packet
+void step_cache
+
 // _xBridge_settings - Type definition for storage of xBridge_settings
 typedef struct _xBridge_settings
 {

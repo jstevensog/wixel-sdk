@@ -90,7 +90,7 @@ elsewhere.  This small bridge rig should be kept nearby the T1D at all times.
 #include <uart1.h>
 
 //define the xBridge Version
-#define VERSION ("2.48a")
+#define VERSION ("2.48b")
 //define the FLASH_TX_ID address.  This is the address we store the Dexcom TX ID number in.
 //#define FLASH_TX_ID		(0x77F8)
 //define the DEXBRIDGE_FLAGS address.  This is the address we store the xBridge flags in.
@@ -948,15 +948,16 @@ void switchToHSXOSC(void)
 // Calculate the time we need to sleep in order to wake up in time to get a packet.
 uint32 calcSleep() {
 	uint32 diff = 0;
-	// don't sleep until we got out first packet
+	XDATA uint32 less = 0;
+	
+	// don't sleep until we got our first packet
 	if (!pkt_time) return 0;
-	// if there was a packet before
-	diff = getMs() - pkt_time;		// how many ms ago was the last packet received?
-	while (diff > DX_PKT_INTERVAL)	// apparently we missed one or more packets since it's been more that 5 minutes
-		diff -= DX_PKT_INTERVAL;	// so subtract 5 minutes until we get a sane range
-	if (diff > (DX_PKT_INTERVAL - wake_before_packet))
-		return 0;					// we should be waiting for a packet - so don't sleep
-	return (DX_PKT_INTERVAL - diff - wake_before_packet);
+	diff = DX_PKT_INTERVAL - wake_before_packet - (last_channel * 500);	
+	less = getMs() - pkt_time;		// how many ms ago was the last packet received?
+	while (less > diff)	// apparently we missed one or more packets since it's been more that 5 minutes
+		less -= diff;	// so subtract 5 minutes until we get a sane range
+	diff -= less;
+	return (diff);
 }
 
 // function to put the CC2511 to sleep, in the appropriate PM, for the specified number of seconds.
@@ -966,8 +967,7 @@ void goToSleep () {
 	unsigned short sleep_time = 0;
 	unsigned short this_sleep_time = 10000;
 	uint32 sleep_time_ms = 0;
-	uint32 seconds_ms = 280000;
-	//seconds_ms *= 1000;
+	uint32 seconds_ms = DX_PKT_INTERVAL;
 	//initialise sleep library
 	sleepInit();
 
@@ -977,6 +977,8 @@ void goToSleep () {
 	//calculate the time we will sleep in total.
 	sleep_time_ms = calcSleep();
 	sleep_time = (unsigned short)(sleep_time_ms/1000);
+	if(send_debug)
+		printf_fast("%lu - sleeping for %lu ms total\r\n", getMs(), sleep_time_ms);
 	// we wake up every 10 seconds to recalibrate the RCOSC.  
 	//The first time may be less than 10 seconds, in case we calculate value that is not wholey divisible by 10.
 	//while(sleep_time > 0)
@@ -993,7 +995,7 @@ void goToSleep () {
 		sleep_time_ms -= this_sleep_time;
 		if(send_debug)
 			printf_fast("%lu - sleep_time_ms is %lu, this_sleep_time is %u\r\n", getMs(), sleep_time_ms, this_sleep_time);
-		if (this_sleep_time < 5000 || this_sleep_time > 10000) {
+		if (this_sleep_time < 2000 || this_sleep_time > 10000) {
 			if(send_debug)
 				printf_fast("this_sleep_time is %u, so skipping this iteration.\r\n", this_sleep_time);
 			continue;
@@ -1839,6 +1841,7 @@ int WaitForPacket(uint32 milliseconds, Dexcom_packet* pkt, uint8 channel)
 			// if the packet passed CRC
 			if(radioCrcPassed())
 			{
+				pkt_time = getMs();
 				// there's a packet!
 				// Add the Frequency Offset Estimate from the FREQEST register to the channel offset.
 				// This helps keep the receiver on track for any drift in the transmitter.
@@ -1954,14 +1957,14 @@ int get_packet(Dexcom_packet* pPkt)
 			{
 				//the current time is less than the pkt_time, meaning our ms register has rolled over.
 				printf_fast("%lu is less than pkt_time (%lu), getMs has rolled over.\r\n", getMs(), pkt_time);
-				delay = 300000 - (4294967295 + getMs() - pkt_time);
+				delay = DX_PKT_INTERVAL - (4294967295 + getMs() - pkt_time);
 			}
 			else
 			{
 				// the current time is greater than the last pkt_time, so we just do a basic calculation.
 				// 5 mins in ms + the wake_before_packet time - (current ms - last packet ms)
 				printf_fast("%lu is greater than pkt_time (%lu), standard calc\r\n", getMs(), pkt_time);
-				delay = 300000 - (getMs() - pkt_time);
+				delay = DX_PKT_INTERVAL - (getMs() - pkt_time);
 			}
 			//if we have a delay number that doesn't equal 0, we need to subtract 500 * the channel we last captured on.
 			// ie, if we last captured on channel 0, subtract 0.  If on channel 1, subtract 500, etc
@@ -1972,9 +1975,9 @@ int get_packet(Dexcom_packet* pPkt)
 					delay += 10;
 			}
 			// in case the figure we came up with is greater than 5 minutes, we deal with it here.  Probably never will run, i'm just like that.
-			while(delay > 300000)
+			while(delay > DX_PKT_INTERVAL)
 			{
-				delay -= 300000;
+				delay -= DX_PKT_INTERVAL;
 			}
 			if(send_debug)
 				printf_fast("%lu: last_channel is %u, delay is %lu\r\n", getMs(), last_channel, delay);
@@ -1983,7 +1986,7 @@ int get_packet(Dexcom_packet* pPkt)
 		{
 			case 1:			
 				// got a packet that passed CRC
-					pkt_time = getMs();
+					//pkt_time = getMs();
 					pPkt->ms = pkt_time;
 					timed_out = 0;
 					if(send_debug)

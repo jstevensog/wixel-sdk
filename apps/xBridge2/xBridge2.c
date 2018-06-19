@@ -2101,9 +2101,6 @@ void main()
 	if(got_ok) {
 		setFlag(XBRIDGE_HW,0);
 	}
-	setDigitalOutput(10,HIGH);
-	//wait 1 seconds, just in case it needs to settle.
-	waitDoingServices(1000,0);
 	//initialise the command buffers
 	// Open the UART and set it up for comms to HM-10
 	//configure the bluetooth module
@@ -2154,6 +2151,10 @@ void main()
 	// Comment out this while loop if you wish to use promiscuous mode and receive all Dexcom tx packets from any source (inadvisable).
 	// Promiscuous mode is allowed in waitForPacket() function (dex_tx_id == 0, will match any dexcom packet).  Just don't send the 
 	// wixel a TXID packet.
+	// Power on HM-1x
+	setDigitalOutput(10,HIGH);
+	//wait 1 seconds, just in case it needs to settle.
+	waitDoingServices(1000,0);
 	initialised = 1;
 	while(settings.dex_tx_id == 0) {
 		if(send_debug)

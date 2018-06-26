@@ -90,7 +90,7 @@ elsewhere.  This small bridge rig should be kept nearby the T1D at all times.
 #include <uart1.h>
 
 //define the xBridge Version
-#define VERSION ("2.47e")
+#define VERSION ("2.48b")
 //define the FLASH_TX_ID address.  This is the address we store the Dexcom TX ID number in.
 //#define FLASH_TX_ID		(0x77F8)
 //define the DEXBRIDGE_FLAGS address.  This is the address we store the xBridge flags in.
@@ -124,8 +124,12 @@ where:
 #define DEXBRIDGE_PROTO_LEVEL (0x01)
 //define the Packet Receive Timeout on each channel in ms
 
-XDATA uint16 wake_before_packet = 40;	// seconds to wake before a packet is expected
+#define DX_PKT_INTERVAL ((uint32)(300000))		// 5*60*1000 ms
+
+XDATA uint16 wake_before_packet = 20000;	// miliseconds to wake before a packet is expected
 static volatile BIT do_sleep = 0;		// indicates we should go to sleep between packets
+static volatile BIT scanning_packet = 0;// indicates we are scanning for a packet
+static volatile BIT got_ack = 0;		// indicates we got an ACK packet during do_services
 static volatile BIT is_sleeping = 0;	// flag indicating we are sleeping.
 static volatile BIT usb_connected;		// indicates DTR set on USB.  Meaning a terminal program is connected via USB for debug.
 static volatile BIT sent_beacon;		// indicates if we have sent our current dex_tx_id to the app.
@@ -172,11 +176,21 @@ typedef struct _Dexcom_packet
 	uint8	checksum;
 	int8	RSSI;
 	uint8	LQI;
+	uint32	ms;
 } Dexcom_packet;
 
 XDATA Dexcom_packet * Pkt;
 
-XDATA uint8 currentPacket[sizeof(Dexcom_packet)];
+#define DXQUEUESIZE 63 //only use 2^x-1 values here!
+
+typedef struct {
+	volatile uint8 read;
+	volatile uint8 write;
+	Dexcom_packet buffer[DXQUEUESIZE+1];
+} Dexcom_fifo;
+
+XDATA Dexcom_fifo Pkts;
+
 
 // _xBridge_settings - Type definition for storage of xBridge_settings
 typedef struct _xBridge_settings
@@ -262,7 +276,12 @@ uint8 init_command_buff(t_command_buff* pCmd);
 
 
 // frequency offsets for each channel - seed to 0.
-static uint8 fOffset[NUM_CHANNELS] = {0xCE,0xD5,0xE6,0xE5};
+/*
+static const int8 fOffsetDefaults[NUM_CHANNELS] = {0xCE,0xD5,0xE6,0xE5};
+static int8 fOffset[NUM_CHANNELS] = {0xCE,0xD5,0xE6,0xE5};
+*/
+static const int8 fOffsetDefaults[NUM_CHANNELS] = {0xF2,0xF9,0x0A,0x0B};
+static int8 fOffset[NUM_CHANNELS] = {0xF2,0xF9,0x0A,0x0B};
 static uint8 nChannels[NUM_CHANNELS] = { 0, 100, 199, 209 };
 
 
@@ -686,16 +705,25 @@ void dex_RadioSettings()
     // Transmit power: one of the highest settings, but not the highest.
     LoadRFParam(&PA_TABLE0, 0x00);
 
+	// NOTE from jstevensog:  The following calculations make no sense.  I have tried these, and the channels do not work.
     // Set the center frequency of channel 0 to 2403.47 MHz.
     // Freq = 24/2^16*(0xFREQ) = 2403.47 MHz
     // FREQ[23:0] = 2^16*(fCarrier/fRef) = 2^16*(2400.156/24) = 0x6401AA
+	
+	//jstevensog:
+	// Reversing the above equations, 
     //IOCFG2 = 0x0E; //RX_SYMBOL_TICK
     //IOCFG1 = 0x16; //RX_HARD_DATA[1]
     //IOCFG0 = 0x1D; //Preamble Quality Reached
     LoadRFParam(&IOCFG0, 0x0E);
+	/*
     LoadRFParam(&FREQ2, 0x65);
     LoadRFParam(&FREQ1, 0x0A);
     LoadRFParam(&FREQ0, 0xAA);
+	*/
+    LoadRFParam(&FREQ2, 0x65);
+    LoadRFParam(&FREQ1, 0x0A);
+    LoadRFParam(&FREQ0, 0x48);
     LoadRFParam(&SYNC1, 0xD3);
     LoadRFParam(&SYNC0, 0x91);
     LoadRFParam(&ADDR, 0x00);
@@ -918,40 +946,28 @@ void switchToHSXOSC(void)
 }
 
 // Calculate the time we need to sleep in order to wake up in time to get a packet.
-uint32 calcSleep(uint16 seconds) {
+uint32 calcSleep() {
 	uint32 diff = 0;
-	//XDATA uint32 now = 0;
 	XDATA uint32 less = 0;
-	diff = seconds;
-//	printf_fast("\r\ndiff: %lu\r\n", diff);
-	diff = (diff * 1000) - (last_channel * 500);
-	//now = diff;
-	//printf_fast("\r\ndiff * 1000: %lu\r\n", diff);
-	less = getMs() - pkt_time;
-//	if ( less > 300000 )
-		//less -= 4294967295;
-	while( less > 300000 )
-		less -= 300000;
-	diff = diff - less;
-//	printf_fast("\r\ndiff - getMs-pkt_time: %lu\r\n", diff);
-//	diff = diff/1000;
-//	while(diff>seconds)
-//		diff-= 300;
-/*	while(diff > now)
-		diff = diff - now; */
-//	printf_fast("\r\ndiff: %lu\r\n", diff);
-	return diff;
+	
+	// don't sleep until we got our first packet
+	if (!pkt_time) return 0;
+	diff = DX_PKT_INTERVAL - wake_before_packet - (last_channel * 500);	
+	less = getMs() - pkt_time;		// how many ms ago was the last packet received?
+	while (less > diff)	// apparently we missed one or more packets since it's been more that 5 minutes
+		less -= diff;	// so subtract 5 minutes until we get a sane range
+	diff -= less;
+	return (diff);
 }
 
 // function to put the CC2511 to sleep, in the appropriate PM, for the specified number of seconds.
-void goToSleep (uint16 seconds) {
+void goToSleep () {
     unsigned char temp;
 	//uint16 sleep_time = 0;
 	unsigned short sleep_time = 0;
 	unsigned short this_sleep_time = 10000;
 	uint32 sleep_time_ms = 0;
-	uint32 seconds_ms = seconds;
-	seconds_ms *= 1000;
+	uint32 seconds_ms = DX_PKT_INTERVAL;
 	//initialise sleep library
 	sleepInit();
 
@@ -959,8 +975,10 @@ void goToSleep (uint16 seconds) {
     makeAllOutputs(LOW);
 	is_sleeping = 1;
 	//calculate the time we will sleep in total.
-	sleep_time_ms = calcSleep(seconds);
+	sleep_time_ms = calcSleep();
 	sleep_time = (unsigned short)(sleep_time_ms/1000);
+	if(send_debug)
+		printf_fast("%lu - sleeping for %lu ms total\r\n", getMs(), sleep_time_ms);
 	// we wake up every 10 seconds to recalibrate the RCOSC.  
 	//The first time may be less than 10 seconds, in case we calculate value that is not wholey divisible by 10.
 	//while(sleep_time > 0)
@@ -977,7 +995,7 @@ void goToSleep (uint16 seconds) {
 		sleep_time_ms -= this_sleep_time;
 		if(send_debug)
 			printf_fast("%lu - sleep_time_ms is %lu, this_sleep_time is %u\r\n", getMs(), sleep_time_ms, this_sleep_time);
-		if (this_sleep_time < 5000 || this_sleep_time > 10000) {
+		if (this_sleep_time < 2000 || this_sleep_time > 10000) {
 			if(send_debug)
 				printf_fast("this_sleep_time is %u, so skipping this iteration.\r\n", this_sleep_time);
 			continue;
@@ -1404,6 +1422,7 @@ typedef struct _RawRecord
 	uint32	dex_src_id;		//raw TXID of the Dexcom Transmitter
 	//int8	RSSI;	//RSSI level of the transmitter, used to determine if it is in range.
 	//uint8	txid;	//ID of this transmission.  Essentially a sequence from 0-63
+	uint32  delay;
 	uint8	function; // Byte representing the xBridge code funcitonality.  01 = this level.
 } RawRecord;
 
@@ -1421,7 +1440,10 @@ void print_packet(Dexcom_packet* pPkt)
 	//msg.dex_src_id = dex_tx_id;
 	msg.dex_src_id = pPkt->src_addr;
 	msg.size = sizeof(msg);
+	msg.delay = getMs() - pPkt->ms;
 	msg.function = DEXBRIDGE_PROTO_LEVEL; // basic functionality, data packet (with ack), TXID packet, beacon packet (also TXID ack).
+	if (send_debug)
+		printf_fast("%lu: sending data packet with a delay of %lu\r\n", getMs(), getMs() - pPkt->ms);
 	send_data( (uint8 XDATA *)msg, msg.size);
 }
 
@@ -1541,10 +1563,10 @@ int doCommand()
 		0x02, 0xF0
 	*/
 	// if do_sleep is set already, don't process it
-	if(uart_buff.commandBuffer[0] == 0x02 && uart_buff.commandBuffer[1] == 0xF0 && !do_sleep) {
+	if(uart_buff.commandBuffer[0] == 0x02 && uart_buff.commandBuffer[1] == 0xF0 && !got_ack) {
 		if(send_debug)
 			printf_fast("%lu - Processing ACK packet\r\n", getMs());
-		do_sleep = 1;
+		got_ack = 1;
 		return(0);
 	}
 	// 's' command for status
@@ -1819,10 +1841,18 @@ int WaitForPacket(uint32 milliseconds, Dexcom_packet* pkt, uint8 channel)
 			// if the packet passed CRC
 			if(radioCrcPassed())
 			{
+				pkt_time = getMs();
 				// there's a packet!
 				// Add the Frequency Offset Estimate from the FREQEST register to the channel offset.
 				// This helps keep the receiver on track for any drift in the transmitter.
-				fOffset[channel] += FREQEST;
+				if((0xff - fOffset[channel]) > FREQEST) {
+					if(send_debug)
+						printf_fast("%lu - applying FREQEST of %d to fOffset[%u] of %d\r\n", getMs(), FREQEST, channel, fOffset[channel]); 
+					fOffset[channel] += FREQEST;
+				} else if (send_debug)
+					printf_fast("%lu - FREQEST of %d is to large to add to fOffset[%u] of %d\r\n", getMs(), FREQEST, channel, fOffset[channel]);
+				if(send_debug)
+					printf_fast("%lu - fOffset[%u] is now %d\r\n", getMs(), channel, fOffset[channel]);
 				// fetch the packet.
 				// length +2 because we append RSSI and LQI to packet buffer, which isn't shown in len
 				memcpy(pkt, packet, min8(len+2, sizeof(Dexcom_packet))); 
@@ -1927,14 +1957,14 @@ int get_packet(Dexcom_packet* pPkt)
 			{
 				//the current time is less than the pkt_time, meaning our ms register has rolled over.
 				printf_fast("%lu is less than pkt_time (%lu), getMs has rolled over.\r\n", getMs(), pkt_time);
-				delay = 300000 - (4294967295 + getMs() - pkt_time);
+				delay = DX_PKT_INTERVAL - (4294967295 + getMs() - pkt_time);
 			}
 			else
 			{
 				// the current time is greater than the last pkt_time, so we just do a basic calculation.
 				// 5 mins in ms + the wake_before_packet time - (current ms - last packet ms)
 				printf_fast("%lu is greater than pkt_time (%lu), standard calc\r\n", getMs(), pkt_time);
-				delay = 300000 - (getMs() - pkt_time);
+				delay = DX_PKT_INTERVAL - (getMs() - pkt_time);
 			}
 			//if we have a delay number that doesn't equal 0, we need to subtract 500 * the channel we last captured on.
 			// ie, if we last captured on channel 0, subtract 0.  If on channel 1, subtract 500, etc
@@ -1945,9 +1975,9 @@ int get_packet(Dexcom_packet* pPkt)
 					delay += 10;
 			}
 			// in case the figure we came up with is greater than 5 minutes, we deal with it here.  Probably never will run, i'm just like that.
-			while(delay > 300000)
+			while(delay > DX_PKT_INTERVAL)
 			{
-				delay -= 300000;
+				delay -= DX_PKT_INTERVAL;
 			}
 			if(send_debug)
 				printf_fast("%lu: last_channel is %u, delay is %lu\r\n", getMs(), last_channel, delay);
@@ -1956,18 +1986,18 @@ int get_packet(Dexcom_packet* pPkt)
 		{
 			case 1:			
 				// got a packet that passed CRC
-					pkt_time = getMs();
+					//pkt_time = getMs();
+					pPkt->ms = pkt_time;
 					timed_out = 0;
 					if(send_debug)
 						printf_fast("got a packet at %lu on channel %u\r\n", pkt_time, last_channel);
 					return 1;
 			case 0:
 				// timed out
-				//printf_fast("timed out\r");
-				//last_cycle_time=now;
 				timed_out = 1;
 				if(send_debug && nChannel == (NUM_CHANNELS - 1))
-					printf_fast("%lu - missed a packet\r\n", getMs());
+					printf_fast("%lu - missed a packet, resetting channel offset to default\r\n", getMs());
+				fOffset[nChannel] = fOffsetDefaults[nChannel];
 				continue;
 			case -1:
 			{
@@ -2071,9 +2101,6 @@ void main()
 	if(got_ok) {
 		setFlag(XBRIDGE_HW,0);
 	}
-	setDigitalOutput(10,HIGH);
-	//wait 1 seconds, just in case it needs to settle.
-	waitDoingServices(1000,0);
 	//initialise the command buffers
 	// Open the UART and set it up for comms to HM-10
 	//configure the bluetooth module
@@ -2124,6 +2151,10 @@ void main()
 	// Comment out this while loop if you wish to use promiscuous mode and receive all Dexcom tx packets from any source (inadvisable).
 	// Promiscuous mode is allowed in waitForPacket() function (dex_tx_id == 0, will match any dexcom packet).  Just don't send the 
 	// wixel a TXID packet.
+	// Power on HM-1x
+	setDigitalOutput(10,HIGH);
+	//wait 1 seconds, just in case it needs to settle.
+	waitDoingServices(1000,0);
 	initialised = 1;
 	while(settings.dex_tx_id == 0) {
 		if(send_debug)
@@ -2152,96 +2183,71 @@ void main()
 	setRadioRegistersInitFunc(dex_RadioSettings);
 	if(send_debug)
 		printf_fast("looking for %lu (%s)\r\n",settings.dex_tx_id, dexcom_src_to_ascii(settings.dex_tx_id));
+	Pkts.write = 0;
+	Pkts.read = 0;
 	while (1)
 	{
-		Dexcom_packet Pkt;
-//		LED_GREEN(1);
-		if(get_packet(&Pkt) == 0) {
-			//printf_fast("last_beacon: %lu, getMs(): %lu\r", last_beacon, getMs());
-			if(ble_connected) 
-//				printf_fast("\r\nSending Beacon\r\n");
-				sendBeacon();
-			continue;
-		}
-		got_packet = 1;
-		LED_GREEN(0);
-		// ok, we got a packet
-		// when we send a packet, we wait until we get an ACK to put us to sleep.
-		// we only wait a maximum of two minutes
-		LED_RED(0);
-		if(send_debug)
-			printf_fast("%lu - got pkt\r\n", getMs());
-		// get the most recent battery capacity
-		battery_capacity = batteryPercent(adcRead(0 | ADC_REFERENCE_INTERNAL));
-		while (!do_sleep){
-			if(send_debug)
-				printf_fast("%lu - packet waiting\r\n", getMs());
-			setDigitalOutput(10,HIGH);
-			while(!ble_connected && (getMs() - pkt_time)<120000) {
-				waitDoingServicesInterruptible(1000, ble_connected,1);
-			}
-			if(ble_connected) {
-				//printf_fast("%lu - ble_connected: %u, sent_beacon: %u\r\n", getMs(), ble_connected, sent_beacon);
-				if(send_debug)
-					printf_fast("%lu - send pkt\r\n", getMs());
-				// send the data packet
-				print_packet(&Pkt);
-			} else {
-				if(send_debug)
-					printf_fast("%lu - ble connect didn't occur, sleeping\r\n", getMs());
-				do_sleep = 1;
-			}
-			//save settings to flash if we need to
-			if(save_settings)
-				saveSettingsToFlash();
-			// wait 10 seconds, listenting for the ACK.
-			if(send_debug)
-				printf_fast("%lu - waiting for ack\r\n", getMs());
-			waitDoingServicesInterruptible(10000, do_sleep, 1);						
-			// if we have sent a number of packets and still have not got an ACK, time to sleep.  We keep trying for up to 2 minutes.
-			if((getMs() - pkt_time) >= 120000) {
-				//sendBeacon();
-				printf_fast("%lu - No ACK received\r\n", getMs());
-				sent_beacon = 0;
-				do_sleep = 1;
-			}
-		}
-			
-		// can't safely sleep if we didn't get an ACK, or if we are already sleeping!
-		if (do_sleep && !is_sleeping)
+		scanning_packet = 1;
+		if (get_packet(&Pkts.buffer[Pkts.write])) 
 		{
-			dly_ms=getMs();
-			while((getMs() - dly_ms) <= 500) {
-				// allow the wixel to complete any other tasks.
-				doServices(1);
-				// if we are writing flash rignt now, reset the delay to wait again.
-				if(writing_flash)
-					dly_ms=getMs();
+			printf_fast("%lu - got pkt, stored at position %d\r\n", getMs(), Pkts.write);
+			// so increment write position for next round...
+			Pkts.write = (Pkts.write + 1) & (DXQUEUESIZE);
+			if (Pkts.read == Pkts.write)
+				Pkts.read = (Pkts.read + 1) & (DXQUEUESIZE); //overflow in ringbuffer, overwriting oldest entry, thus move read one up
+			do_sleep = 1; // we got a packet, so we are aligned with the 5 minute interval - so go to sleep after sending out packets
+		}
+		else 
+		{
+			printf_fast("%lu - did not receive a pkt with %d pkts in queue\r\n", getMs(), (Pkts.write - Pkts.read));
+			setDigitalOutput(10, HIGH);
+			if (ble_connected) sendBeacon();
+			do_sleep = 0; // we did not receive a packet, so do not sleep but keep looking for the next one..
+		}
+		scanning_packet = 0;
+		if (send_debug)
+			printf_fast("Pkts.write = %d, Pkts.read = %d\r\n", Pkts.write, Pkts.read);
+		//TODO: what happens if we did not receive a packet? pkt_time is still set to the last one - this will make the following checks fail...
+		if (Pkts.read != Pkts.write) 
+		{ // if we have a packet
+			// we wait up to one minute for BLE connect
+			while (!ble_connected && ((getMs() - pkt_time) < 60000)) 
+			{
+				if (send_debug) printf_fast("%lu - packet waiting for ble connect\r\n", getMs());
+				setDigitalOutput(10, HIGH);
+				waitDoingServicesInterruptible(1000, ble_connected, 1);
 			}
-			// make sure the uart send buffer is empty.
-			while(uart1TxAvailable() < 255);
-			// turn off the BLE module
-			if(sleep_ble){
-				ble_dly_ms = getMs();
-				while(ble_connected && ((getMs() - ble_dly_ms) <= 10500 )) 
+
+			// we got a connection, so send pending packets now - at most for two minutes after the last packet was received
+			while ((Pkts.read != Pkts.write) && ble_connected && ((getMs() - pkt_time) < 120000)) 
+			{
+				if(send_debug) printf_fast("%lu sending packet from position %d\r\n", getMs(), Pkts.read);
+				got_ack = 0;
+				print_packet(&Pkts.buffer[Pkts.read]);
+				waitDoingServicesInterruptible(2000, got_ack, 1);
+				if (got_ack) 
 				{
-					//waitDoingServicesInterruptible(2000,(!ble_connected),1);
-					if(send_debug)
-						printf_fast("%lu - ble_connected = %d, P1_2 = %d\r\n", getMs(), ble_connected, P1_2);
-					if(breakBt())
-					{
-						if(send_debug)
-							printf_fast("broke connection\r\n");
-						break;
-					}
-					else
-						if(send_debug)
-							printf_fast("connection did not break, P1_2 is %d\r\n", P1_2);
+					if (send_debug)	
+						printf_fast("%lu got ack for read position %d while write is %d, incrementing read\r\n", getMs(), Pkts.read, Pkts.write);
+					Pkts.read = (Pkts.read + 1) & (DXQUEUESIZE); //increment read position since we got an ack for the last package
 				}
-				printf_fast("turning off BLE\r\n");
-				setDigitalOutput(10,LOW);
-				ble_connected = 0;
 			}
+		}
+
+		// save settings to flash if we need to
+		if(save_settings)
+			saveSettingsToFlash();
+
+		if (do_sleep) {
+			// turn off the BLE module
+			setDigitalOutput(10, LOW);
+			ble_connected = 0;
+			// wait for stuff to settle
+			waitDoingServices(1000, 1);
+		}
+
+		if (do_sleep) {
+			// save all Port Interrupts state (enabled/disabled).
 		    savedPICTL = PICTL;
 			// save port 0 Interrupt Enable state.  This is a BIT value and equates to IEN1.POIE.
 			// This is probably redundant now, as we do all IEN registers in goToSleep.
@@ -2250,24 +2256,37 @@ void main()
 			savedP0DIR = P0DIR;
 			savedP1SEL = P1SEL;
 			savedP1DIR = P1DIR;
-			// save all Port Interrupts state (enabled/disabled).
+
 			P1SEL = 0x00;
-			P1DIR =0xff;
-			//printf_fast("%lu - going to sleep\r\n", getMs());
-			// clear sent_beacon so we send it next time we wake up.
-			sent_beacon = 0;
-			// turn of the RF Frequency Synthesiser.
+			P1DIR = 0xff;
+			// turn of the RF Frequency Synthesizer.
 			RFST = 4;   //SIDLE
+			// turn all wixel LEDs on
+			//LED_RED(1);
+			//LED_YELLOW(1);
+			//LED_GREEN(1);
 			// wait 500 ms, processing services.
-			// sleep for around 300s
-			if(send_debug)
-				printf_fast("%lu - sleeping for %u\r\n", getMs(), 300-wake_before_packet);
-			radioMacSleep();
+			dly_ms = getMs();
+			while ((getMs() - dly_ms) <= 500) {
+				// allow the wixel to complete any other tasks.
+				doServices(1);
+				// if we are writing flash right now, reset the delay to wait again.
+				if (writing_flash)
+					dly_ms=getMs();
+			}
+			// make sure the uart send buffer is empty.
+			while (uart1TxAvailable() < 255);
+
+			makeAllOutputs(LOW);
 			// turn the wixel LEDS off
 			LED_RED(0);
 			LED_YELLOW(0);
 			LED_GREEN(0);
-			goToSleep(300-wake_before_packet);   //
+
+			radioMacSleep();
+			goToSleep();
+
+			// now we just woke up again...
 			got_packet = 0;
 			radioMacResume();
 			//WDCTL=0x0B;
@@ -2288,12 +2307,14 @@ void main()
 			// Without this, we USBCIF.SUSPENDIF will not get set (the datasheet is incomplete).
 			USBCIE = 0b0111;
 			//LED_GREEN(1);
-			if(send_debug)
+			if (send_debug)
 				printf_fast("%lu - awake!\r\n", getMs());
+			// get the most recent battery capacity
+			battery_capacity = batteryPercent(adcRead(0 | ADC_REFERENCE_INTERNAL));
 			//printf_fast("%lu - battery_capacity: %u\r\n", battery_capacity);
 			init_command_buff(&usb_buff);
 			init_command_buff(&uart_buff);
-			// tell the radio to remain IDLE when the next packet is recieved.
+			// tell the radio to remain IDLE when the next packet is received.
 			MCSM1 = 0;			// after RX go to idle, we don't transmit
 			// watchdog mode??? this will do a reset?
 			//			WDCTL=0x0B;
@@ -2303,9 +2324,6 @@ void main()
 			// power on the BLE module
 			ble_connected = 0;
 			//printf_fast("%lu - ble on\r\n", getMs());
-			setDigitalOutput(10,HIGH);
-//			waitDoingServices(250,0,1);
-			waitDoingServices(250,1);
-				}
+		}
 	}
 }

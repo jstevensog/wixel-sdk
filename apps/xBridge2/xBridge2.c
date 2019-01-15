@@ -90,7 +90,7 @@ elsewhere.  This small bridge rig should be kept nearby the T1D at all times.
 #include <uart1.h>
 
 //define the xBridge Version
-#define VERSION ("2.48b")
+#define VERSION ("2.48c")
 //define the FLASH_TX_ID address.  This is the address we store the Dexcom TX ID number in.
 //#define FLASH_TX_ID		(0x77F8)
 //define the DEXBRIDGE_FLAGS address.  This is the address we store the xBridge flags in.
@@ -2200,8 +2200,16 @@ void main()
 		else 
 		{
 			printf_fast("%lu - did not receive a pkt with %d pkts in queue\r\n", getMs(), (Pkts.write - Pkts.read));
-			setDigitalOutput(10, HIGH);
+			// we wait up to 30 seconds for BLE connect
+			tmp_ms = getMs();
+			while (!ble_connected && ((getMs() - tmp_ms) < 30000)) 
+			{
+				if (send_debug) printf_fast("%lu - no packet, waiting for ble connect for beacon\r\n", getMs());
+				setDigitalOutput(10, HIGH);
+				waitDoingServicesInterruptible(1000, ble_connected, 1);
+			}
 			if (ble_connected) sendBeacon();
+			waitDoingServices(1000,1);
 			do_sleep = 0; // we did not receive a packet, so do not sleep but keep looking for the next one..
 		}
 		scanning_packet = 0;
@@ -2211,15 +2219,17 @@ void main()
 		if (Pkts.read != Pkts.write) 
 		{ // if we have a packet
 			// we wait up to one minute for BLE connect
-			while (!ble_connected && ((getMs() - pkt_time) < 60000)) 
+			tmp_ms = getMs();
+			while (!ble_connected && ((getMs() - tmp_ms) < 60000)) 
 			{
 				if (send_debug) printf_fast("%lu - packet waiting for ble connect\r\n", getMs());
 				setDigitalOutput(10, HIGH);
 				waitDoingServicesInterruptible(1000, ble_connected, 1);
 			}
 
-			// we got a connection, so send pending packets now - at most for two minutes after the last packet was received
-			while ((Pkts.read != Pkts.write) && ble_connected && ((getMs() - pkt_time) < 120000)) 
+			tmp_ms = getMs();
+			// we got a connection, so send pending packets now - at most for two minutes.
+			while ((Pkts.read != Pkts.write) && ble_connected && ((getMs() - tmp_ms) < 120000)) 
 			{
 				if(send_debug) printf_fast("%lu sending packet from position %d\r\n", getMs(), Pkts.read);
 				got_ack = 0;

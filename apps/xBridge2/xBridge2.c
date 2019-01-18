@@ -2210,16 +2210,18 @@ void main()
 			}
 			if (ble_connected) sendBeacon();
 			waitDoingServices(1000,1);
+			setDigitalOutput(10, LOW);
+			ble_connected = 0;
 			do_sleep = 0; // we did not receive a packet, so do not sleep but keep looking for the next one..
 		}
 		scanning_packet = 0;
 		if (send_debug)
 			printf_fast("Pkts.write = %d, Pkts.read = %d\r\n", Pkts.write, Pkts.read);
-		//TODO: what happens if we did not receive a packet? pkt_time is still set to the last one - this will make the following checks fail...
 		if (Pkts.read != Pkts.write) 
 		{ // if we have a packet
 			// we wait up to one minute for BLE connect
 			tmp_ms = getMs();
+			setDigitalOutput(10, HIGH);
 			while (!ble_connected && ((getMs() - tmp_ms) < 60000)) 
 			{
 				if (send_debug) printf_fast("%lu - packet waiting for ble connect\r\n", getMs());

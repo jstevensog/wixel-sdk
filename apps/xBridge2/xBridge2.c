@@ -267,8 +267,6 @@ int doServices(uint8 bWithProtocol);
 uint8 batteryPercent(uint16 val);
 // prototype for sendBeacon function
 void sendBeacon(void);
-// prototype for breakBt function.
-BIT breakBt(void);
 // prototype for atBt function
 void atBt(void);
 // prototype for init_command_buff
@@ -1166,14 +1164,15 @@ void updateLeds()
 		else 
 		{
 			if(getFlag(SLEEP_BLE)){
-				//LED_YELLOW(ble_connected);
-				LED_YELLOW(P1_2);
+				LED_YELLOW(ble_connected);
+				//LED_YELLOW(P1_2);
 			}
 		}
 		if(dex_tx_id_set)
 		{
 			if(got_packet) {
-				LED_RED(radioQueueRxCurrentPacket());
+				//LED_RED(radioQueueRxCurrentPacket());
+				LED_RED(1);
 			}
 			else {
 				LED_RED((getMs() & 0x200) == 0x200);
@@ -1265,72 +1264,8 @@ void send_data( uint8 *msg, uint8 len)
 	if(usb_connected && send_debug)
 		printf_fast("\r\nResponse: ");
 	while(uart1TxAvailable()<255);
-/*	if(usb_connected) {
-		if(send_debug)
-			printf_fast("Sending: ");
-		while(usbComTxAvailable() < len) 
-			doServices(1);
-		for(i=0; i < len; i++)
-		{
-			usbComTxSendByte(msg[i]);
-		}
-		while(usbComTxAvailable()<128) 
-			waitDoingServices(20,1);
-		if(send_debug)
-			printf_fast("\r\nResponse: ");
-	}
-*/
 }
 
-
-// function called by doServices to monitor the state of the BLE connection
-/*void bleConnectMonitor() {
-	//to store the time we went high
-	static uint32 timer;
-	//to store P1_2 the last time we looked.
-	static BIT last_check;
-	if(!initialised)
-		return;
-	if(!(getFlag(DONT_IGNORE_BLE_STATE)))
-	{
-		ble_connected = 1;
-		sent_beacon = 0;
-		return;
-	}
-	// if P1_2 is high, ble_connected is low, and the last_check was low, sav the time and set last_check.
-	if (P1_2 && !ble_connected && !last_check) {
-		timer=getMs();
-		last_check = 1;
-	// otherwise if P1_2 goes low, and ble_connected is high, we cancel everything.
-	} else if (!P1_2) {
-		ble_connected =0;
-		last_check = 0;
-		ble_connected = 0;
-	//otherwise, if P1_2 has been high for more than 550ms, we can safely assume we have ble_connected, so say so.
-	} else if (P1_2 && last_check && ((getMs() - timer)>550)) {
-		ble_connected = 1;
-		sent_beacon = 0;
-	}
-}
-*/
-// Send a pulse to the BlueTooth module SYS input
-BIT breakBt() {
-	XDATA uint8 length;
-	got_ok = 0;
-	init_command_buff(&uart_buff);
-	length = sprintf(msg_buf, "AT");
-	send_data(msg_buf, length);
-	waitDoingServicesInterruptible(5000,(!ble_connected),1);
-	if(ble_connected)
-	{
-		if(send_debug) 
-			printf_fast("%lu - breakBt() Did not disconnect\r\n", getMs());
-		return 0;
-	}
-	if(send_debug) 
-		printf_fast("%lu - breakBt() disconnected\r\n", getMs());
-	return 1;
-}
 
 // Send a pulse to the BlueTooth module SYS input
 void atBt() {
@@ -1354,29 +1289,15 @@ void atBt() {
 // Configure the BlueTooth module with a name.
 void configBt() {
 	XDATA uint8 length;
-	//uartEnable();
-//	breakBt();
-/*	length = sprintf(msg_buf,"AT+RENEW");
-	send_data(msg_buf,length);
-	delayMs(5000);
-	length = sprintf(msg_buf,"AT+PWRM1");
-	send_data(msg_buf,length);
-	delayMs(1000);
-*/	length = sprintf(msg_buf, "AT+NAMExBridge%02x%02x", serialNumber[0],serialNumber[1]);
+	length = sprintf(msg_buf, "AT+NAMExBridge%02x%02x", serialNumber[0],serialNumber[1]);
     send_data(msg_buf, length);
-//	waitDoingServices(500,0,1);
 	waitDoingServices(500,1);
 	length = sprintf(msg_buf, "AT+NOTI1");
     send_data(msg_buf, length);
 	waitDoingServices(500,1);
-    /*	length = sprintf(msg_buf, "AT+RELI1");
-    send_data(msg_buf, length);
-	waitDoingServices(500,0,1);	
-*/	length = sprintf(msg_buf,"AT+RESET");
+	length = sprintf(msg_buf,"AT+RESET");
 	send_data(msg_buf,length);
-//	waitDoingServices(5000,0,1);
 	waitDoingServices(5000,1);
-    //uartDisable();
 }
 
 
@@ -1780,12 +1701,6 @@ int doServices(uint8 bWithProtocol)
 	boardService();
 	updateLeds();
 	usbComService();
-	//bleConnectMonitor();
-/*	if(initialised && ble_connected && !sent_beacon) {
-		sent_beacon = 1;
-		sendBeacon();
-	}
-*/
 	if(bWithProtocol)
 		return controlProtocolService();
 	return 1;
